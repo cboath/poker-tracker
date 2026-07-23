@@ -1,0 +1,12 @@
+version = 0.1
+
+[default.deploy.parameters]
+stack_name = "pokertracker"
+resolve_s3 = true
+s3_prefix = "pokertracker"
+capabilities = "CAPABILITY_IAM"
+parameter_overrides = "StageName=\"prod\" AdminEmails=\"cteater@gmail.com\""
+image_repositories = []
+
+[default.global.parameters]
+region = "us-east-1"

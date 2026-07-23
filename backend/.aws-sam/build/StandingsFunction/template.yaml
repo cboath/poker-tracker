@@ -1,0 +1,281 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Monthly Poker Tournament Tracker - serverless backend
+  (API Gateway + Lambda + DynamoDB + Cognito)
+
+Parameters:
+  StageName:
+    Type: String
+    Default: prod
+  AdminEmails:
+    Type: CommaDelimitedList
+    Description: Initial admin emails to pre-create as Cognito users (optional, can also add via console)
+    Default: ""
+
+Globals:
+  Function:
+    Runtime: nodejs22.x
+    Timeout: 10
+    MemorySize: 256
+    Environment:
+      Variables:
+        TABLE_NAME: !Ref PokerTable
+
+Resources:
+  ############################
+  # DynamoDB (single table, on-demand billing = pay only for what you use)
+  ############################
+  PokerTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${AWS::StackName}-table'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: PK
+          AttributeType: S
+        - AttributeName: SK
+          AttributeType: S
+        - AttributeName: GSI1PK
+          AttributeType: S
+        - AttributeName: GSI1SK
+          AttributeType: S
+      KeySchema:
+        - AttributeName: PK
+          KeyType: HASH
+        - AttributeName: SK
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: GSI1
+          KeySchema:
+            - AttributeName: GSI1PK
+              KeyType: HASH
+            - AttributeName: GSI1SK
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+
+  ############################
+  # Cognito (admin login)
+  ############################
+  AdminUserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub '${AWS::StackName}-admins'
+      AutoVerifiedAttributes: [email]
+      UsernameAttributes: [email]
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 10
+          RequireUppercase: true
+          RequireLowercase: true
+          RequireNumbers: true
+
+  AdminUserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      UserPoolId: !Ref AdminUserPool
+      ClientName: !Sub '${AWS::StackName}-web-client'
+      GenerateSecret: false
+      ExplicitAuthFlows:
+        - ALLOW_USER_SRP_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+
+  ############################
+  # API Gateway
+  ############################
+  PokerApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: !Ref StageName
+      Cors:
+        AllowMethods: "'GET,POST,PUT,DELETE,OPTIONS'"
+        AllowHeaders: "'Content-Type,Authorization'"
+        AllowOrigin: "'*'"
+      Auth:
+        DefaultAuthorizer: CognitoAuthorizer
+        AddDefaultAuthorizerToCorsPreflight: false
+        Authorizers:
+          CognitoAuthorizer:
+            UserPoolArn: !GetAtt AdminUserPool.Arn
+
+  ############################
+  # Lambda functions
+  ############################
+  PlayersFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ./
+      Handler: dist/handlers/players.handler
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref PokerTable
+      Events:
+        ListPlayers:
+          Type: Api
+          Properties: { RestApiId: !Ref PokerApi, Path: /players, Method: GET, Auth: { Authorizer: NONE } }
+        CreatePlayer:
+          Type: Api
+          Properties: { RestApiId: !Ref PokerApi, Path: /players, Method: POST }
+        GetPlayer:
+          Type: Api
+          Properties: { RestApiId: !Ref PokerApi, Path: '/players/{playerId}', Method: GET, Auth: { Authorizer: NONE } }
+        UpdatePlayer:
+          Type: Api
+          Properties: { RestApiId: !Ref PokerApi, Path: '/players/{playerId}', Method: PUT }
+        DeletePlayer:
+          Type: Api
+          Properties: { RestApiId: !Ref PokerApi, Path: '/players/{playerId}', Method: DELETE }
+
+  PlayerProfileFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ./
+      Handler: dist/handlers/playerProfile.handler
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref PokerTable
+      Events:
+        GetProfile:
+          Type: Api
+          Properties: { RestApiId: !Ref PokerApi, Path: '/players/{playerId}/profile', Method: GET, Auth: { Authorizer: NONE } }
+
+  GamesFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ./
+      Handler: dist/handlers/games.handler
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref PokerTable
+      Events:
+        ListYears:
+          Type: Api
+          Properties: { RestApiId: !Ref PokerApi, Path: /years, Method: GET, Auth: { Authorizer: NONE } }
+        ListGames:
+          Type: Api
+          Properties: { RestApiId: !Ref PokerApi, Path: '/years/{year}/games', Method: GET, Auth: { Authorizer: NONE } }
+        CreateGame:
+          Type: Api
+          Properties: { RestApiId: !Ref PokerApi, Path: '/years/{year}/games', Method: POST }
+        GetGame:
+          Type: Api
+          Properties: { RestApiId: !Ref PokerApi, Path: '/games/{gameId}', Method: GET, Auth: { Authorizer: NONE } }
+        UpdateGame:
+          Type: Api
+          Properties: { RestApiId: !Ref PokerApi, Path: '/games/{gameId}', Method: PUT }
+        DeleteGame:
+          Type: Api
+          Properties: { RestApiId: !Ref PokerApi, Path: '/games/{gameId}', Method: DELETE }
+
+  ResultsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ./
+      Handler: dist/handlers/results.handler
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref PokerTable
+      Events:
+        UpsertResult:
+          Type: Api
+          Properties: { RestApiId: !Ref PokerApi, Path: '/games/{gameId}/results/{playerId}', Method: PUT }
+        DeleteResult:
+          Type: Api
+          Properties: { RestApiId: !Ref PokerApi, Path: '/games/{gameId}/results/{playerId}', Method: DELETE }
+
+  StandingsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ./
+      Handler: dist/handlers/standings.handler
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref PokerTable
+      Events:
+        GetStandings:
+          Type: Api
+          Properties: { RestApiId: !Ref PokerApi, Path: '/years/{year}/standings', Method: GET, Auth: { Authorizer: NONE } }
+
+  ############################
+  # S3 bucket (static frontend)
+  ############################
+  frontendbucketttrpkr:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${AWS::StackName}-frontend'
+      WebsiteConfiguration:
+        IndexDocument: index.html
+        ErrorDocument: index.html   # SPA: let React Router handle 404s
+
+  frontendbucketttrpkrPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref frontendbucketttrpkr
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub '${frontendbucketttrpkr.Arn}/*'
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub 'arn:aws:cloudfront::${AWS::AccountId}:distribution/${FrontendDistribution}'
+
+  ############################
+  # CloudFront distribution
+  ############################
+  FrontendOAC:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub '${AWS::StackName}-oac'
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  FrontendDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        DefaultRootObject: index.html
+        HttpVersion: http2
+        Origins:
+          - Id: S3Origin
+            DomainName: !GetAtt frontendbucketttrpkr.RegionalDomainName
+            OriginAccessControlId: !GetAtt FrontendOAC.Id
+            S3OriginConfig: {}   # required but empty when using OAC
+        DefaultCacheBehavior:
+          TargetOriginId: S3Origin
+          ViewerProtocolPolicy: redirect-to-https
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6   # CachingOptimized (AWS managed)
+          AllowedMethods: [GET, HEAD, OPTIONS]
+          CachedMethods: [GET, HEAD]
+          Compress: true
+        # Return index.html for any 403/404 so React Router handles routing
+        CustomErrorResponses:
+          - ErrorCode: 403
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+          - ErrorCode: 404
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+
+Outputs:
+  ApiUrl:
+    Description: Base URL for the API
+    Value: !Sub 'https://${PokerApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}'
+  UserPoolId:
+    Value: !Ref AdminUserPool
+  UserPoolClientId:
+    Value: !Ref AdminUserPoolClient
+  TableName:
+    Value: !Ref PokerTable
+  frontendbucketttrpkrName:
+    Description: S3 bucket to sync the frontend build into
+    Value: !Ref frontendbucketttrpkr
+  FrontendUrl:
+    Description: CloudFront HTTPS URL for the frontend
+    Value: !Sub 'https://${FrontendDistribution.DomainName}'

@@ -1,0 +1,22 @@
+{
+  "name": "poker-tracker-backend",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Lambda backend for the monthly poker tournament tracker",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "watch": "tsc -w -p tsconfig.json",
+    "sam:build": "npm run build && sam build",
+    "sam:deploy": "npm run sam:build && sam deploy --guided",
+    "sam:deploy:quick": "npm run sam:build && sam deploy"
+  },
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.600.0",
+    "@aws-sdk/lib-dynamodb": "^3.600.0"
+  },
+  "devDependencies": {
+    "@types/aws-lambda": "^8.10.138",
+    "@types/node": "^22.20.1",
+    "typescript": "^5.4.5"
+  }
+}
