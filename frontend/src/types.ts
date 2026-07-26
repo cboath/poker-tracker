@@ -15,19 +15,29 @@ export interface Game {
   location?: string;
   entrantsCount: number;
   totalPot?: number;
+  buyInAmount?: number;
   notes?: string;
 }
 
+// Mirrors backend/src/types.ts -- a `Result` can now exist either as:
+//   - a roster entrant added at game-creation time with a buy-in but no
+//     finish yet (`position` undefined), or
+//   - a completed finish recorded via the "Add/update a player's result"
+//     form (`position` set).
+// `points` stays a required number; `0` means "not yet scored" (real finishes
+// are always >= 1 via calculatePoints), so existing sum/chart code that reads
+// `points` doesn't need to special-case `undefined`.
 export interface Result {
   gameId: string;
   playerId: string;
   playerName: string;
-  position: number;
+  position?: number; // absent = roster entrant, finish TBD
   buyIn: number;
   rebuys: number;
+  rebuyCount: number;
   addOns: number;
   winnings: number;
-  points: number;
+  points: number; // 0 if not yet scored
   notes?: string;
 }
 

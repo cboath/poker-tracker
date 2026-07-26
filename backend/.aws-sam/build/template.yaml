@@ -252,6 +252,13 @@ Resources:
               Ref: PokerApi
             Path: /games/{gameId}/results/{playerId}
             Method: DELETE
+        AddRebuy:
+          Type: Api
+          Properties:
+            RestApiId:
+              Ref: PokerApi
+            Path: /games/{gameId}/results/{playerId}/rebuy
+            Method: POST
     Metadata:
       SamResourceId: ResultsFunction
   StandingsFunction:

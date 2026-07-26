@@ -32,9 +32,10 @@ export const handler = async (
       0
     );
     const firstPlaceFinishes = results.filter((r) => r.position === 1).length;
-    const bestFinish = results.length
-      ? Math.min(...results.map((r) => r.position))
-      : null;
+    const scoredPositions = results
+      .map((r) => r.position)
+      .filter((p): p is number => typeof p === 'number');
+    const bestFinish = scoredPositions.length ? Math.min(...scoredPositions) : null;
 
     return jsonResponse(200, {
       player: playerRes.Item,

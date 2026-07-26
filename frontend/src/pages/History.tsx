@@ -93,7 +93,8 @@ export default function History() {
               </thead>
               <tbody>
                 {[...selectedGame.results]
-                  .sort((a, b) => a.position - b.position)
+                  // Position-less (not-yet-scored) entrants sort to the end.
+                  .sort((a, b) => (a.position ?? Infinity) - (b.position ?? Infinity))
                   .map((r) => (
                     <tr key={r.playerId}>
                       <td>{r.position}</td>

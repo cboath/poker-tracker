@@ -55,10 +55,16 @@ export const api = {
     data: {
       date: string;
       month: number;
-      entrantsCount: number;
+      // entrantsCount/totalPot are only required when `players` is omitted;
+      // when `players` is provided the backend derives both from the
+      // roster (entrantsCount = players.length, totalPot = sum of buyIns)
+      // and also creates a Result per roster player with no position yet.
+      entrantsCount?: number;
       location?: string;
       totalPot?: number;
+      buyInAmount?: number;
       notes?: string;
+      players?: { playerId: string; playerName: string; buyIn: number }[];
     }
   ) =>
     request<Game>(`/years/${year}/games`, {
@@ -74,7 +80,7 @@ export const api = {
   upsertResult: (
     gameId: string,
     playerId: string,
-    data: Omit<Result, 'gameId' | 'playerId' | 'points'>
+    data: Omit<Result, 'gameId' | 'playerId' | 'points' | 'rebuyCount'>
   ) =>
     request<Result>(`/games/${gameId}/results/${playerId}`, {
       method: 'PUT',
@@ -82,6 +88,11 @@ export const api = {
     }),
   deleteResult: (gameId: string, playerId: string) =>
     request(`/games/${gameId}/results/${playerId}`, { method: 'DELETE' }),
+  addRebuy: (gameId: string, playerId: string, amount?: number) =>
+    request<Result>(`/games/${gameId}/results/${playerId}/rebuy`, {
+      method: 'POST',
+      body: JSON.stringify(amount === undefined ? {} : { amount }),
+    }),
 
   // Standings
   getStandings: (year: number) => request<StandingsResponse>(`/years/${year}/standings`),

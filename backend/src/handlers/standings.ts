@@ -42,7 +42,23 @@ async function computeStandings(year: number): Promise<APIGatewayProxyResult> {
   );
 
   // 3. Aggregate per player
-  const byPlayer = new Map<string, StandingRow & { finishSum: number; headToHead: Record<string, number> }>();
+  //
+  // Policy for Results with no `position` yet (roster entrants added at game
+  // creation whose game hasn't been scored, or a no-show never given a
+  // finish -- see Result's docs in ../types.ts): they still count toward
+  // `gamesPlayed`, `totalBuyIns`, and `totalWinnings` (money changed hands /
+  // they showed up and bought in), but are excluded from every finish-based
+  // aggregate -- `totalPoints`, `bestFinish`, `firstPlaceFinishes`, and the
+  // numerator/denominator of `avgFinish` -- since there is no finish to rank
+  // them by yet. This is the "partial roster still shows up as attendance"
+  // reading; once a position is recorded via upsertResult, that same row
+  // flows into the finish-based numbers on the next standings computation.
+  // A player who has only ever had position-less results gets avgFinish: 0
+  // (no divide-by-zero) and is left out of bestFinish/firstPlaceFinishes.
+  const byPlayer = new Map<
+    string,
+    StandingRow & { finishSum: number; scoredGamesCount: number; headToHead: Record<string, number> }
+  >();
 
   resultsPerGame.forEach((res) => {
     (res.Items ?? []).forEach((r) => {
@@ -57,16 +73,23 @@ async function computeStandings(year: number): Promise<APIGatewayProxyResult> {
         bestFinish: Infinity,
         avgFinish: 0,
         finishSum: 0,
+        scoredGamesCount: 0,
         headToHead: {},
       };
 
+      const hasPosition = typeof r.position === 'number';
+
       existing.gamesPlayed += 1;
-      existing.totalPoints += r.points;
       existing.totalWinnings += r.winnings ?? 0;
       existing.totalBuyIns += (r.buyIn ?? 0) + (r.rebuys ?? 0) + (r.addOns ?? 0);
-      existing.finishSum += r.position;
-      existing.bestFinish = Math.min(existing.bestFinish, r.position);
-      if (r.position === 1) existing.firstPlaceFinishes += 1;
+
+      if (hasPosition) {
+        existing.totalPoints += r.points ?? 0;
+        existing.finishSum += r.position;
+        existing.scoredGamesCount += 1;
+        existing.bestFinish = Math.min(existing.bestFinish, r.position);
+        if (r.position === 1) existing.firstPlaceFinishes += 1;
+      }
 
       byPlayer.set(r.playerId, existing);
     });
@@ -81,7 +104,10 @@ async function computeStandings(year: number): Promise<APIGatewayProxyResult> {
     totalBuyIns: Math.round(p.totalBuyIns * 100) / 100,
     firstPlaceFinishes: p.firstPlaceFinishes,
     bestFinish: p.bestFinish === Infinity ? 0 : p.bestFinish,
-    avgFinish: Math.round((p.finishSum / p.gamesPlayed) * 100) / 100,
+    avgFinish:
+      p.scoredGamesCount === 0
+        ? 0
+        : Math.round((p.finishSum / p.scoredGamesCount) * 100) / 100,
   }));
 
   // Sort: total points desc, then most 1st-place finishes, then total winnings.
