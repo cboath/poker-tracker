@@ -9,6 +9,13 @@ import { Result } from '../types';
  *
  * To change the payout structure, just edit this table. Each array's
  * percentages should sum to 1 and its length is the number of places paid.
+ *
+ * Each place's payout is rounded independently to the nearest $5 (standard
+ * round-half-up) so payouts are easy to hand out in cash at a real home
+ * game. This means payouts are NOT guaranteed to sum back to exactly
+ * `totalPot` -- the difference is surfaced as `remainder` from
+ * `calculatePayouts` (positive: pot cash left undistributed; negative:
+ * rounded payouts exceed the pot).
  */
 const PAYOUT_TIERS: Record<number, number[]> = {
   1: [1],
@@ -26,11 +33,13 @@ export interface PayoutRow {
 export function calculatePayouts(results: Result[]): {
   totalPot: number;
   payouts: PayoutRow[];
+  remainder: number;
 } {
-  const totalPot = results.reduce(
+  const rawTotalPot = results.reduce(
     (sum, r) => sum + (r.buyIn ?? 0) + (r.rebuys ?? 0) + (r.addOns ?? 0),
     0
   );
+  const totalPot = Math.round(rawTotalPot * 100) / 100;
 
   // A Result can now exist with no `position` yet (roster entrant added at
   // game-creation time, finish TBD -- see Result's docs in ../types.ts).
@@ -46,18 +55,27 @@ export function calculatePayouts(results: Result[]): {
   const paidCount = Math.min(scored.length, maxTier);
 
   if (paidCount === 0) {
-    return { totalPot, payouts: [] };
+    return { totalPot, payouts: [], remainder: 0 };
   }
 
   const tier = PAYOUT_TIERS[paidCount];
   const sorted = [...scored].sort((a, b) => a.position - b.position).slice(0, paidCount);
 
+  // Round each place's payout independently to the nearest $5 so payouts are
+  // cash-friendly for a real home game (e.g. $85 instead of $86.50). This is
+  // standard round-half-up: Math.round already rounds .5 up toward
+  // +Infinity for positive values, so $87.50 -> $90. As a result, payouts
+  // are no longer guaranteed to sum to exactly totalPot -- the leftover (or
+  // shortfall) is returned separately as `remainder`.
   const payouts: PayoutRow[] = sorted.map((r, i) => ({
     playerId: r.playerId,
     playerName: r.playerName,
     position: r.position,
-    payout: Math.round(totalPot * tier[i] * 100) / 100,
+    payout: Math.round((totalPot * tier[i]) / 5) * 5,
   }));
 
-  return { totalPot, payouts };
+  const paidSum = payouts.reduce((sum, p) => sum + p.payout, 0);
+  const remainder = Math.round((totalPot - paidSum) * 100) / 100;
+
+  return { totalPot, payouts, remainder };
 }

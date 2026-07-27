@@ -51,6 +51,7 @@ export default function GameEntry() {
   const [payoutResult, setPayoutResult] = useState<{
     totalPot: number;
     payouts: PayoutRow[];
+    remainder: number;
   } | null>(null);
 
   useEffect(() => {
@@ -336,7 +337,7 @@ export default function GameEntry() {
           </button>
           {payoutResult && (
             <div style={{ marginTop: 12, marginBottom: 20 }}>
-              <p>Total pot: ${payoutResult.totalPot}</p>
+              <p>Total pot: ${payoutResult.totalPot.toFixed(2)}</p>
               {payoutResult.payouts.length === 0 ? (
                 <div className="empty-state">No results recorded yet to calculate payouts.</div>
               ) : (
@@ -358,6 +359,13 @@ export default function GameEntry() {
                     ))}
                   </tbody>
                 </table>
+              )}
+              {payoutResult.payouts.length > 0 && payoutResult.remainder !== 0 && (
+                <p>
+                  {payoutResult.remainder > 0
+                    ? `Leftover after rounding: $${payoutResult.remainder.toFixed(2)} (unpaid, e.g. keep for next game or split as you see fit)`
+                    : `Rounding pays out $${Math.abs(payoutResult.remainder).toFixed(2)} more than the pot (organizer covers the difference)`}
+                </p>
               )}
             </div>
           )}
