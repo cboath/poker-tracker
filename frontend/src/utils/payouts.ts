@@ -30,16 +30,49 @@ export interface PayoutRow {
   payout: number;
 }
 
+/**
+ * A single place's payout in a pot-based structure preview, before any
+ * finish positions have necessarily been assigned to specific players. Uses
+ * `place` (1st, 2nd, 3rd, ...) rather than `position` to make clear this is
+ * NOT tied to any particular `Result.position` -- see `calculatePayoutStructure`.
+ */
+export interface PayoutStructureRow {
+  place: number;
+  payout: number;
+}
+
+const maxPayoutTier = Math.max(...Object.keys(PAYOUT_TIERS).map(Number));
+
+/**
+ * Rounds each place in `tier` to the nearest $5 of `totalPot * tier[i]`, per
+ * the cash-friendly rounding rule described above. This is the one place the
+ * $5-rounding rule lives; both `calculatePayouts` and
+ * `calculatePayoutStructure` call this rather than duplicating the math.
+ */
+function roundTierPayouts(totalPot: number, tier: number[]): number[] {
+  return tier.map((share) => Math.round((totalPot * share) / 5) * 5);
+}
+
+/** `totalPot` minus the sum of `payouts`, rounded to the cent. */
+function calculateRemainder(totalPot: number, payouts: number[]): number {
+  const paidSum = payouts.reduce((sum, p) => sum + p, 0);
+  return Math.round((totalPot - paidSum) * 100) / 100;
+}
+
+function calculateTotalPot(results: Result[]): number {
+  const rawTotalPot = results.reduce(
+    (sum, r) => sum + (r.buyIn ?? 0) + (r.rebuys ?? 0) + (r.addOns ?? 0),
+    0
+  );
+  return Math.round(rawTotalPot * 100) / 100;
+}
+
 export function calculatePayouts(results: Result[]): {
   totalPot: number;
   payouts: PayoutRow[];
   remainder: number;
 } {
-  const rawTotalPot = results.reduce(
-    (sum, r) => sum + (r.buyIn ?? 0) + (r.rebuys ?? 0) + (r.addOns ?? 0),
-    0
-  );
-  const totalPot = Math.round(rawTotalPot * 100) / 100;
+  const totalPot = calculateTotalPot(results);
 
   // A Result can now exist with no `position` yet (roster entrant added at
   // game-creation time, finish TBD -- see Result's docs in ../types.ts).
@@ -51,8 +84,7 @@ export function calculatePayouts(results: Result[]): {
     (r): r is Result & { position: number } => typeof r.position === 'number'
   );
 
-  const maxTier = Math.max(...Object.keys(PAYOUT_TIERS).map(Number));
-  const paidCount = Math.min(scored.length, maxTier);
+  const paidCount = Math.min(scored.length, maxPayoutTier);
 
   if (paidCount === 0) {
     return { totalPot, payouts: [], remainder: 0 };
@@ -67,15 +99,60 @@ export function calculatePayouts(results: Result[]): {
   // +Infinity for positive values, so $87.50 -> $90. As a result, payouts
   // are no longer guaranteed to sum to exactly totalPot -- the leftover (or
   // shortfall) is returned separately as `remainder`.
+  const roundedPayouts = roundTierPayouts(totalPot, tier);
   const payouts: PayoutRow[] = sorted.map((r, i) => ({
     playerId: r.playerId,
     playerName: r.playerName,
     position: r.position,
-    payout: Math.round((totalPot * tier[i]) / 5) * 5,
+    payout: roundedPayouts[i],
   }));
 
-  const paidSum = payouts.reduce((sum, p) => sum + p.payout, 0);
-  const remainder = Math.round((totalPot - paidSum) * 100) / 100;
+  const remainder = calculateRemainder(
+    totalPot,
+    payouts.map((p) => p.payout)
+  );
 
   return { totalPot, payouts, remainder };
+}
+
+/**
+ * Previews the payout structure (dollar amounts per place) based on money
+ * already in the pot, keyed off the number of entrants on the roster
+ * (`results.length`) rather than how many finish positions have been
+ * assigned (`scored.length` in `calculatePayouts`). This lets an organizer
+ * see "what's 1st/2nd/3rd worth" before the tournament is closed out or
+ * anyone has busted, since a `Result` can exist with a buy-in but no
+ * `position` yet (see Result's docs in ../types.ts).
+ *
+ * Rows are identified by `place` (1st, 2nd, 3rd, ...), NOT by player --
+ * which specific player lands in which place isn't known pre-scoring.
+ *
+ * Reuses the same `PAYOUT_TIERS` table and $5-rounding rule as
+ * `calculatePayouts` (via `roundTierPayouts`), so the preview always matches
+ * what `calculatePayouts` will eventually produce once positions are set,
+ * assuming the pot and entrant count don't change in the meantime.
+ */
+export function calculatePayoutStructure(results: Result[]): {
+  totalPot: number;
+  structure: PayoutStructureRow[];
+  remainder: number;
+} {
+  const totalPot = calculateTotalPot(results);
+
+  const paidCount = Math.min(results.length, maxPayoutTier);
+
+  if (paidCount === 0) {
+    return { totalPot, structure: [], remainder: 0 };
+  }
+
+  const tier = PAYOUT_TIERS[paidCount];
+  const roundedPayouts = roundTierPayouts(totalPot, tier);
+  const structure: PayoutStructureRow[] = roundedPayouts.map((payout, i) => ({
+    place: i + 1,
+    payout,
+  }));
+
+  const remainder = calculateRemainder(totalPot, roundedPayouts);
+
+  return { totalPot, structure, remainder };
 }
