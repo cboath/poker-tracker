@@ -75,6 +75,14 @@ export default function GameEntry() {
     setRoster((prev) => removeFromRosterList(prev, playerId));
   }
 
+  function setDateToToday() {
+    const today = new Date();
+    const yyyy = today.getFullYear();
+    const mm = String(today.getMonth() + 1).padStart(2, '0');
+    const dd = String(today.getDate()).padStart(2, '0');
+    setDate(`${yyyy}-${mm}-${dd}`);
+  }
+
   async function createGame(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
@@ -117,6 +125,9 @@ export default function GameEntry() {
           <label htmlFor="year">Season year</label>
           <input id="year" type="number" value={year} onChange={(e) => setYear(Number(e.target.value))} />
           <label htmlFor="date">Date</label>
+          <button className="btn" type="button" onClick={setDateToToday}>
+            Today
+          </button>
           <input id="date" type="date" value={date} onChange={(e) => setDate(e.target.value)} required />
           <label htmlFor="location">Location (optional)</label>
           <input id="location" value={location} onChange={(e) => setLocation(e.target.value)} />
