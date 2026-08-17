@@ -226,6 +226,13 @@ Resources:
               Ref: PokerApi
             Path: /games/{gameId}
             Method: DELETE
+        AddPlayerToGame:
+          Type: Api
+          Properties:
+            RestApiId:
+              Ref: PokerApi
+            Path: /games/{gameId}/players
+            Method: POST
     Metadata:
       SamResourceId: GamesFunction
   ResultsFunction:

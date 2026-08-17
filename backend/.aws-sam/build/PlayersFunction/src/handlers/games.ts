@@ -8,6 +8,7 @@ import {
   PutCommand,
   QueryCommand,
   DeleteCommand,
+  UpdateCommand,
   jsonResponse,
 } from '../db';
 import { Game, Result } from '../types';
@@ -32,6 +33,8 @@ export const handler = async (
       return await updateGame(gameId, event);
     if (resource === '/games/{gameId}' && method === 'DELETE' && gameId)
       return await deleteGame(gameId);
+    if (resource === '/games/{gameId}/players' && method === 'POST' && gameId)
+      return await addPlayerToGame(gameId, event);
 
     return jsonResponse(404, { message: 'Not found' });
   } catch (err) {
@@ -220,6 +223,84 @@ async function createGame(
   }
 
   return jsonResponse(201, game);
+}
+
+// Adds a single player to a game that already exists -- the counterpart to
+// createGame's roster write for games that were created without a roster (or
+// that need a late addition once other players have already been scored).
+// This intentionally mirrors createGame's per-roster-player write byte for
+// byte (same Result shape, same GSI keys) rather than inventing a second
+// convention for "roster entrant, finish TBD".
+async function addPlayerToGame(
+  gameId: string,
+  event: APIGatewayProxyEvent
+): Promise<APIGatewayProxyResult> {
+  const body = JSON.parse(event.body ?? '{}');
+
+  if (!isValidRosterPlayer(body)) {
+    return jsonResponse(400, {
+      message:
+        'playerId, playerName, and a non-negative numeric buyIn are required',
+    });
+  }
+
+  const gameRes = await ddb.send(
+    new GetCommand({ TableName: TABLE_NAME, Key: Keys.game(gameId) })
+  );
+  if (!gameRes.Item) return jsonResponse(404, { message: 'Game not found' });
+  const game = gameRes.Item as Game;
+
+  // Don't silently clobber an existing result -- it may already carry a real
+  // finish position/winnings recorded via PUT /games/{gameId}/results/{playerId}.
+  // Adding a player is only valid for a player not already on this game's
+  // roster.
+  const existingResultRes = await ddb.send(
+    new GetCommand({ TableName: TABLE_NAME, Key: Keys.result(gameId, body.playerId) })
+  );
+  if (existingResultRes.Item) {
+    return jsonResponse(409, { message: 'Player is already in this game' });
+  }
+
+  const result: Result = {
+    gameId,
+    playerId: body.playerId,
+    playerName: body.playerName,
+    buyIn: body.buyIn,
+    rebuys: 0,
+    rebuyCount: 0,
+    addOns: 0,
+    winnings: 0,
+    points: 0, // not yet scored; position is unset
+  };
+
+  await ddb.send(
+    new PutCommand({
+      TableName: TABLE_NAME,
+      Item: {
+        ...Keys.result(gameId, body.playerId),
+        GSI1PK: `PLAYER#${body.playerId}`,
+        GSI1SK: `YEAR#${game.year}#GAME#${gameId}`,
+        ...result,
+      },
+    })
+  );
+
+  // Keep the game's denormalized entrantsCount/totalPot in sync. ADD treats
+  // a missing numeric attribute as 0, so this is safe even for games created
+  // before totalPot existed on every item. Like updateGame, this does NOT
+  // retroactively recompute points on any already-scored results for this
+  // game -- that's an accepted pre-existing limitation, not something fixed
+  // here.
+  await ddb.send(
+    new UpdateCommand({
+      TableName: TABLE_NAME,
+      Key: Keys.game(gameId),
+      UpdateExpression: 'ADD entrantsCount :one, totalPot :buyIn',
+      ExpressionAttributeValues: { ':one': 1, ':buyIn': body.buyIn },
+    })
+  );
+
+  return jsonResponse(201, result);
 }
 
 async function getGameWithResults(gameId: string): Promise<APIGatewayProxyResult> {

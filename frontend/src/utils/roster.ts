@@ -3,7 +3,9 @@
  * GameEntry.tsx: players are added one at a time (with their individual
  * buy-in) before the game is created, and the backend derives
  * entrantsCount/totalPot from this list (see backend/src/handlers/games.ts,
- * `createGame`'s `players` handling).
+ * `createGame`'s `players` handling). Also home to `validateNewRosterEntry`,
+ * the analogous validation for GameManage's "Add Player" panel, which adds
+ * one player to an *already-created* game (POST /games/{gameId}/players).
  *
  * Kept as plain functions (no React/DOM) so the add/remove/duplicate/total
  * logic can be unit tested directly, matching this repo's existing
@@ -82,4 +84,32 @@ export function rosterTotal(roster: RosterEntry[]): number {
  */
 export function canSubmitRoster(roster: RosterEntry[]): boolean {
   return roster.length > 0;
+}
+
+export interface NewRosterEntryInput {
+  playerId: string;
+  buyIn: number | '';
+}
+
+/**
+ * Validates the "Add Player" form on GameManage (POST /games/{gameId}/players)
+ * before it's submitted -- a player must be selected and the buy-in must be a
+ * non-negative finite number. Unlike `addPlayerToRoster` this doesn't own
+ * duplicate-prevention: the player picker on GameManage is already filtered
+ * to players not yet in the game's results (mirroring GameEntry's roster
+ * picker), and the backend is the source of truth for duplicates anyway
+ * (409 "Player is already in this game").
+ */
+export function validateNewRosterEntry(input: NewRosterEntryInput): { ok: true } | { ok: false; error: string } {
+  if (!input.playerId) {
+    return { ok: false, error: 'Select a player to add.' };
+  }
+  if (
+    input.buyIn === '' ||
+    !Number.isFinite(Number(input.buyIn)) ||
+    Number(input.buyIn) < 0
+  ) {
+    return { ok: false, error: 'Enter a non-negative buy-in for the player.' };
+  }
+  return { ok: true };
 }

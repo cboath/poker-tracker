@@ -93,6 +93,16 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(amount === undefined ? {} : { amount }),
     }),
+  // Adds one player to an already-created game as a new roster entrant (buy-in
+  // recorded, no finish position yet) -- the GameManage "Add Player" panel's
+  // way of growing the roster after the game exists, as opposed to
+  // createGame's one-time roster at creation. 409s if the player already has
+  // a Result on this game.
+  addPlayerToGame: (gameId: string, data: { playerId: string; playerName: string; buyIn: number }) =>
+    request<Result>(`/games/${gameId}/players`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
 
   // Standings
   getStandings: (year: number) => request<StandingsResponse>(`/years/${year}/standings`),

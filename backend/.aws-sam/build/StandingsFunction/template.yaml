@@ -167,6 +167,9 @@ Resources:
         DeleteGame:
           Type: Api
           Properties: { RestApiId: !Ref PokerApi, Path: '/games/{gameId}', Method: DELETE }
+        AddPlayerToGame:
+          Type: Api
+          Properties: { RestApiId: !Ref PokerApi, Path: '/games/{gameId}/players', Method: POST }
 
   ResultsFunction:
     Type: AWS::Serverless::Function

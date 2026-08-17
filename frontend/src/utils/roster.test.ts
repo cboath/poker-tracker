@@ -4,6 +4,7 @@ import {
   canSubmitRoster,
   removeFromRoster,
   rosterTotal,
+  validateNewRosterEntry,
   RosterEntry,
 } from './roster';
 
@@ -130,5 +131,43 @@ describe('canSubmitRoster', () => {
 
   it('is true once at least one player has been added', () => {
     expect(canSubmitRoster([{ playerId: 'p1', playerName: 'Alice', buyIn: 50 }])).toBe(true);
+  });
+});
+
+describe('validateNewRosterEntry', () => {
+  it('accepts a selected player with a non-negative buy-in', () => {
+    expect(validateNewRosterEntry({ playerId: 'p1', buyIn: 50 })).toEqual({ ok: true });
+  });
+
+  it('accepts a zero buy-in (a comp/freeroll entry is not "negative")', () => {
+    expect(validateNewRosterEntry({ playerId: 'p1', buyIn: 0 })).toEqual({ ok: true });
+  });
+
+  it('rejects when no player is selected', () => {
+    expect(validateNewRosterEntry({ playerId: '', buyIn: 50 })).toEqual({
+      ok: false,
+      error: 'Select a player to add.',
+    });
+  });
+
+  it('rejects a blank ("") buy-in', () => {
+    expect(validateNewRosterEntry({ playerId: 'p1', buyIn: '' })).toEqual({
+      ok: false,
+      error: 'Enter a non-negative buy-in for the player.',
+    });
+  });
+
+  it('rejects a negative buy-in', () => {
+    expect(validateNewRosterEntry({ playerId: 'p1', buyIn: -10 })).toEqual({
+      ok: false,
+      error: 'Enter a non-negative buy-in for the player.',
+    });
+  });
+
+  it('rejects a non-finite buy-in (e.g. NaN slipping through)', () => {
+    expect(validateNewRosterEntry({ playerId: 'p1', buyIn: NaN })).toEqual({
+      ok: false,
+      error: 'Enter a non-negative buy-in for the player.',
+    });
   });
 });

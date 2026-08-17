@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { api } from '../api/client';
-import { GameWithResults, Result } from '../types';
+import { GameWithResults, Player, Result } from '../types';
 import { calculatePayouts, calculatePayoutStructure, PayoutRow, PayoutStructureRow } from '../utils/payouts';
+import { validateNewRosterEntry } from '../utils/roster';
 
 // The /admin/games/:gameId view -- per the "the only thing on the page is
 // the new game" request, this renders exactly one game: its results table
@@ -15,6 +16,15 @@ export default function GameManage() {
   const [activeGame, setActiveGame] = useState<GameWithResults | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  // "Add Player" panel: lets an admin attach a player to an already-created
+  // game (POST /games/{gameId}/players), the same "roster entrant, finish
+  // TBD" shape createGame's roster produces -- but usable after the game
+  // exists, unlike GameEntry's roster builder which only runs at creation.
+  const [players, setPlayers] = useState<Player[]>([]);
+  const [newPlayerId, setNewPlayerId] = useState('');
+  const [newPlayerBuyIn, setNewPlayerBuyIn] = useState<number | ''>('');
+  const [addingPlayer, setAddingPlayer] = useState(false);
 
   // Payout calculation (client-side only, computed from activeGame.results)
   const [payoutResult, setPayoutResult] = useState<{
@@ -31,6 +41,19 @@ export default function GameManage() {
     structure: PayoutStructureRow[];
     remainder: number;
   } | null>(null);
+
+  useEffect(() => {
+    api.listPlayers().then(setPlayers).catch((e) => setError(e.message));
+  }, []);
+
+  // Once the game's buy-in amount is known, default the "Add Player" form's
+  // buy-in to it (mirrors GameEntry's rosterBuyIn default-from-buyInAmount
+  // behavior). Keyed on the primitive value rather than `activeGame` so this
+  // doesn't clobber an in-progress edit every time refreshGame() re-fetches
+  // the game object for an unrelated reason (e.g. saving a position).
+  useEffect(() => {
+    if (activeGame?.buyInAmount !== undefined) setNewPlayerBuyIn(activeGame.buyInAmount);
+  }, [activeGame?.buyInAmount]);
 
   useEffect(() => {
     if (!gameId) return;
@@ -70,6 +93,33 @@ export default function GameManage() {
     setPayoutStructureResult(null);
   }
 
+  async function handleAddPlayer(e: React.FormEvent) {
+    e.preventDefault();
+    if (!activeGame) return;
+    setError(null);
+    const validation = validateNewRosterEntry({ playerId: newPlayerId, buyIn: newPlayerBuyIn });
+    if (!validation.ok) {
+      setError(validation.error);
+      return;
+    }
+    const player = players.find((p) => p.playerId === newPlayerId);
+    setAddingPlayer(true);
+    try {
+      await api.addPlayerToGame(activeGame.gameId, {
+        playerId: newPlayerId,
+        playerName: player ? `${player.firstName} ${player.lastName}` : '',
+        buyIn: Number(newPlayerBuyIn),
+      });
+      await refreshGame();
+      setNewPlayerId('');
+      setNewPlayerBuyIn(activeGame.buyInAmount ?? '');
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setAddingPlayer(false);
+    }
+  }
+
   function showPayouts() {
     if (!activeGame) return;
     setPayoutResult(calculatePayouts(activeGame.results));
@@ -101,6 +151,38 @@ export default function GameManage() {
         {activeGame.totalPot ? ` · $${activeGame.totalPot} pot` : ''}
       </p>
       {error && <p style={{ color: 'var(--rail-red)' }}>{error}</p>}
+
+      <div className="panel" style={{ marginTop: 20, marginBottom: 24 }}>
+        <h3>Add Player</h3>
+        <form onSubmit={handleAddPlayer} style={{ maxWidth: 320 }}>
+          <label htmlFor="newPlayerId">Player</label>
+          <select
+            id="newPlayerId"
+            value={newPlayerId}
+            onChange={(e) => setNewPlayerId(e.target.value)}
+          >
+            <option value="">Select a player&hellip;</option>
+            {players
+              .filter((p) => p.active && !activeGame.results.some((r) => r.playerId === p.playerId))
+              .map((p) => (
+                <option key={p.playerId} value={p.playerId}>
+                  {p.firstName} {p.lastName}
+                </option>
+              ))}
+          </select>
+          <label htmlFor="newPlayerBuyIn">Buy-in</label>
+          <input
+            id="newPlayerBuyIn"
+            type="number"
+            min={0}
+            value={newPlayerBuyIn}
+            onChange={(e) => setNewPlayerBuyIn(e.target.value === '' ? '' : Number(e.target.value))}
+          />
+          <button className="btn primary" type="submit" disabled={addingPlayer}>
+            {addingPlayer ? 'Adding...' : 'Add player'}
+          </button>
+        </form>
+      </div>
 
       <div className="panel" style={{ marginTop: 20, marginBottom: 24 }}>
         <h3>Results</h3>
