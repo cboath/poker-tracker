@@ -8,6 +8,7 @@ export default function History() {
   const [year, setYear] = useState<number | null>(null);
   const [games, setGames] = useState<Game[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [showArchived, setShowArchived] = useState(false);
 
   useEffect(() => {
     api
@@ -22,10 +23,10 @@ export default function History() {
   useEffect(() => {
     if (year === null) return;
     api
-      .listGamesForYear(year)
+      .listGamesForYear(year, { includeArchived: showArchived })
       .then((gs) => setGames(gs.sort((a, b) => a.date.localeCompare(b.date))))
       .catch((e) => setError(e.message));
-  }, [year]);
+  }, [year, showArchived]);
 
   if (error) return <div className="empty-state">{error}</div>;
 
@@ -51,6 +52,18 @@ export default function History() {
         </div>
       )}
 
+      {years.length > 0 && (
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6, width: 'fit-content' }}>
+          <input
+            type="checkbox"
+            checked={showArchived}
+            onChange={(e) => setShowArchived(e.target.checked)}
+            style={{ width: 'auto', marginBottom: 0 }}
+          />
+          Show archived games
+        </label>
+      )}
+
       <div className="panel">
         {games.length === 0 && year !== null ? (
           <div className="empty-state">No games logged for {year} yet.</div>
@@ -63,7 +76,10 @@ export default function History() {
               style={{ gridTemplateColumns: '1fr auto', textDecoration: 'none', color: 'inherit' }}
             >
               <div>
-                <div className="rail-name">{new Date(g.date + 'T00:00:00').toLocaleDateString(undefined, { month: 'long', day: 'numeric', year: 'numeric' })}</div>
+                <div className="rail-name">
+                  {new Date(g.date + 'T00:00:00').toLocaleDateString(undefined, { month: 'long', day: 'numeric', year: 'numeric' })}
+                  {g.archived ? ' (Archived)' : ''}
+                </div>
                 <div className="rail-meta">{g.location ?? 'Location TBD'} &middot; {g.entrantsCount} entrants{g.totalPot ? ` · $${g.totalPot} pot` : ''}</div>
               </div>
               <div className="btn">View results</div>

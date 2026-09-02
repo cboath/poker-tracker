@@ -3,6 +3,7 @@ import {
   Game,
   GameWithResults,
   Result,
+  HighHand,
   StandingsResponse,
   PlayerProfileResponse,
 } from '../types';
@@ -49,7 +50,10 @@ export const api = {
 
   // Years / Games
   listYears: () => request<number[]>('/years'),
-  listGamesForYear: (year: number) => request<Game[]>(`/years/${year}/games`),
+  listGamesForYear: (year: number, opts?: { includeArchived?: boolean }) =>
+    request<Game[]>(
+      `/years/${year}/games${opts?.includeArchived ? '?includeArchived=true' : ''}`
+    ),
   createGame: (
     year: number,
     data: {
@@ -75,6 +79,10 @@ export const api = {
   updateGame: (gameId: string, data: Partial<Game>) =>
     request<Game>(`/games/${gameId}`, { method: 'PUT', body: JSON.stringify(data) }),
   deleteGame: (gameId: string) => request(`/games/${gameId}`, { method: 'DELETE' }),
+  archiveGame: (gameId: string) =>
+    request<Game>(`/games/${gameId}`, { method: 'PUT', body: JSON.stringify({ archived: true }) }),
+  unarchiveGame: (gameId: string) =>
+    request<Game>(`/games/${gameId}`, { method: 'PUT', body: JSON.stringify({ archived: false }) }),
 
   // Results
   upsertResult: (
@@ -103,6 +111,19 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(data),
     }),
+
+  // High hand -- one best-hand-of-the-night record per game (PUT replaces it
+  // whole, same convention as upsertResult).
+  setHighHand: (
+    gameId: string,
+    data: Omit<HighHand, 'gameId'>
+  ) =>
+    request<HighHand>(`/games/${gameId}/highhand`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+  deleteHighHand: (gameId: string) =>
+    request(`/games/${gameId}/highhand`, { method: 'DELETE' }),
 
   // Standings
   getStandings: (year: number) => request<StandingsResponse>(`/years/${year}/standings`),

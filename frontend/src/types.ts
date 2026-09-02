@@ -17,6 +17,7 @@ export interface Game {
   totalPot?: number;
   buyInAmount?: number;
   notes?: string;
+  archived?: boolean; // hidden from the default history/standings views but not deleted
 }
 
 // Mirrors backend/src/types.ts -- a `Result` can now exist either as:
@@ -41,8 +42,30 @@ export interface Result {
   notes?: string;
 }
 
+export type Suit = 'hearts' | 'diamonds' | 'clubs' | 'spades';
+export type Rank = '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' | '10' | 'J' | 'Q' | 'K' | 'A';
+
+export interface Card {
+  rank: Rank;
+  suit: Suit;
+}
+
+// Mirrors backend/src/types.ts -- one best-hand-of-the-night record per
+// game. `cards` is the raw 5-card hand; the hand's rank (e.g. "Full House")
+// is derived on the frontend from `cards` via utils/handRank, not stored,
+// so there's a single source of truth for the ranking logic.
+export interface HighHand {
+  gameId: string;
+  playerId: string;
+  playerName: string;
+  cards: Card[]; // exactly 5 cards
+  amount?: number;
+  notes?: string;
+}
+
 export interface GameWithResults extends Game {
   results: Result[];
+  highHand?: HighHand | null;
 }
 
 export interface StandingRow {

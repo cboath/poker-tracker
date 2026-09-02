@@ -7,7 +7,7 @@ export default function NavBar() {
 
   return (
     <nav className="nav">
-      <div className="nav-brand">♠ The Yearly Grind</div>
+      <div className="nav-brand">♠ Deliberate Donkeys</div>
       <div className="nav-links">
         <NavLink to="/" end className={({ isActive }) => (isActive ? 'active' : '')}>
           Standings

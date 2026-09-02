@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { api } from '../api/client';
 import { GameWithResults } from '../types';
+import HighHandCards from '../components/HighHandCards';
 
 export default function GameDetail() {
   const { gameId } = useParams<{ gameId: string }>();
@@ -33,6 +34,11 @@ export default function GameDetail() {
       </p>
 
       <div className="suit-divider">&hearts; &spades; &diams; &clubs;</div>
+
+      <div className="panel" style={{ marginBottom: 24 }}>
+        <h3>High Hand</h3>
+        <HighHandCards highHand={game.highHand} size="lg" />
+      </div>
 
       <div className="panel">
         <h3>Results</h3>

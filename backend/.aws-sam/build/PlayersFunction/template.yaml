@@ -170,6 +170,12 @@ Resources:
         AddPlayerToGame:
           Type: Api
           Properties: { RestApiId: !Ref PokerApi, Path: '/games/{gameId}/players', Method: POST }
+        SetHighHand:
+          Type: Api
+          Properties: { RestApiId: !Ref PokerApi, Path: '/games/{gameId}/highhand', Method: PUT }
+        DeleteHighHand:
+          Type: Api
+          Properties: { RestApiId: !Ref PokerApi, Path: '/games/{gameId}/highhand', Method: DELETE }
 
   ResultsFunction:
     Type: AWS::Serverless::Function

@@ -1,5 +1,5 @@
 /* ---------------------------------------------------------------
-   Design tokens: "The Yearly Grind" — a home poker league identity
+   Design tokens: "Deliberate Donkeys" — a home poker league identity
    Palette pulls from the felt table itself rather than generic
    dashboard blue. Chip-stack bars stand in for bar charts because
    the subject already has its own unit of measurement: the chip.
@@ -295,4 +295,157 @@ td {
 
 .empty-state h3 {
   color: var(--cream);
+}
+
+/* ---------------- Playing cards (high hand) ---------------- */
+.playing-card {
+  position: relative;
+  background: var(--cream);
+  border: 1px solid rgba(18, 16, 13, 0.25);
+  border-radius: 6px;
+  box-shadow: 0 3px 8px rgba(0, 0, 0, 0.4);
+  font-family: var(--font-body);
+  font-weight: 700;
+  line-height: 1.05;
+  flex-shrink: 0;
+}
+
+.playing-card-corner {
+  position: absolute;
+  text-align: center;
+}
+
+.playing-card-corner-top {
+  top: 6%;
+  left: 8%;
+}
+
+.playing-card-corner-bottom {
+  bottom: 6%;
+  right: 8%;
+  transform: rotate(180deg);
+}
+
+.playing-card-pip {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 1.8em;
+  opacity: 0.9;
+}
+
+.high-hand-cards {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 14px 0;
+}
+
+.high-hand-cards.empty {
+  gap: 0;
+}
+
+.card-slot-picker {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 8px 0 16px;
+}
+
+.card-slot-button {
+  padding: 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+  border-radius: 6px;
+}
+
+.card-slot-button:focus-visible {
+  outline: 2px solid var(--brass-bright);
+  outline-offset: 2px;
+}
+
+.card-slot-empty {
+  width: 60px;
+  height: 84px;
+  border: 2px dashed rgba(244, 239, 230, 0.3);
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--cream-dim);
+  font-size: 1.6rem;
+  transition: border-color 0.15s ease, color 0.15s ease;
+}
+
+.card-slot-button:hover .card-slot-empty {
+  border-color: var(--brass);
+  color: var(--brass-bright);
+}
+
+/* ---------------- Modal (card picker) ---------------- */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(5, 32, 26, 0.75);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  z-index: 100;
+}
+
+.modal-panel {
+  background: var(--felt-dark);
+  border: 1px solid rgba(244, 239, 230, 0.15);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-card);
+  padding: 20px;
+  max-width: 640px;
+  width: 100%;
+  max-height: 85vh;
+  overflow-y: auto;
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+
+.card-picker-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.card-picker-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.card-picker-slot {
+  padding: 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+  border-radius: 6px;
+  transition: transform 0.1s ease;
+}
+
+.card-picker-slot:hover:not(:disabled) {
+  transform: translateY(-4px);
+}
+
+.card-picker-slot:focus-visible {
+  outline: 2px solid var(--brass-bright);
+  outline-offset: 2px;
+}
+
+.card-picker-slot:disabled {
+  opacity: 0.25;
+  cursor: not-allowed;
 }

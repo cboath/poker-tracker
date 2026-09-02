@@ -1,9 +1,22 @@
 import React, { useEffect, useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 import { api } from '../api/client';
-import { GameWithResults, Player, Result } from '../types';
+import { GameWithResults, HighHand, Player, Result } from '../types';
 import { calculatePayouts, calculatePayoutStructure, PayoutRow, PayoutStructureRow } from '../utils/payouts';
-import { validateNewRosterEntry } from '../utils/roster';
+import HighHandCards from '../components/HighHandCards';
+import AddPlayersModal from '../components/AddPlayersModal';
+import HighHandModal from '../components/HighHandModal';
+
+// Formats a finish place as "1st", "2nd", "3rd", "4th", etc. -- used to
+// label the "Knocked Out" button with the place it's about to record.
+function ordinal(n: number): string {
+  const j = n % 10;
+  const k = n % 100;
+  if (j === 1 && k !== 11) return `${n}st`;
+  if (j === 2 && k !== 12) return `${n}nd`;
+  if (j === 3 && k !== 13) return `${n}rd`;
+  return `${n}th`;
+}
 
 // The /admin/games/:gameId view -- per the "the only thing on the page is
 // the new game" request, this renders exactly one game: its results table
@@ -13,18 +26,23 @@ import { validateNewRosterEntry } from '../utils/roster';
 // create-form, no cross-game list here -- that's GameEntry's job.
 export default function GameManage() {
   const { gameId } = useParams<{ gameId: string }>();
+  const navigate = useNavigate();
   const [activeGame, setActiveGame] = useState<GameWithResults | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [archiving, setArchiving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [finishing, setFinishing] = useState(false);
+  const [finishNotice, setFinishNotice] = useState<string | null>(null);
 
-  // "Add Player" panel: lets an admin attach a player to an already-created
-  // game (POST /games/{gameId}/players), the same "roster entrant, finish
-  // TBD" shape createGame's roster produces -- but usable after the game
-  // exists, unlike GameEntry's roster builder which only runs at creation.
+  // "Add Players" modal (opened from the Results panel): lets an admin
+  // check off any number of players not already on the roster and attach
+  // them all at once (one POST /games/{gameId}/players per checked player),
+  // the same "roster entrant, finish TBD" shape createGame's roster
+  // produces -- but usable after the game exists, unlike GameEntry's roster
+  // builder which only runs at creation.
   const [players, setPlayers] = useState<Player[]>([]);
-  const [newPlayerId, setNewPlayerId] = useState('');
-  const [newPlayerBuyIn, setNewPlayerBuyIn] = useState<number | ''>('');
-  const [addingPlayer, setAddingPlayer] = useState(false);
+  const [showAddPlayers, setShowAddPlayers] = useState(false);
 
   // Payout calculation (client-side only, computed from activeGame.results)
   const [payoutResult, setPayoutResult] = useState<{
@@ -45,15 +63,6 @@ export default function GameManage() {
   useEffect(() => {
     api.listPlayers().then(setPlayers).catch((e) => setError(e.message));
   }, []);
-
-  // Once the game's buy-in amount is known, default the "Add Player" form's
-  // buy-in to it (mirrors GameEntry's rosterBuyIn default-from-buyInAmount
-  // behavior). Keyed on the primitive value rather than `activeGame` so this
-  // doesn't clobber an in-progress edit every time refreshGame() re-fetches
-  // the game object for an unrelated reason (e.g. saving a position).
-  useEffect(() => {
-    if (activeGame?.buyInAmount !== undefined) setNewPlayerBuyIn(activeGame.buyInAmount);
-  }, [activeGame?.buyInAmount]);
 
   useEffect(() => {
     if (!gameId) return;
@@ -93,31 +102,16 @@ export default function GameManage() {
     setPayoutStructureResult(null);
   }
 
-  async function handleAddPlayer(e: React.FormEvent) {
-    e.preventDefault();
+  async function handleAddPlayers(
+    selected: { playerId: string; playerName: string; buyIn: number }[]
+  ) {
     if (!activeGame) return;
     setError(null);
-    const validation = validateNewRosterEntry({ playerId: newPlayerId, buyIn: newPlayerBuyIn });
-    if (!validation.ok) {
-      setError(validation.error);
-      return;
-    }
-    const player = players.find((p) => p.playerId === newPlayerId);
-    setAddingPlayer(true);
-    try {
-      await api.addPlayerToGame(activeGame.gameId, {
-        playerId: newPlayerId,
-        playerName: player ? `${player.firstName} ${player.lastName}` : '',
-        buyIn: Number(newPlayerBuyIn),
-      });
-      await refreshGame();
-      setNewPlayerId('');
-      setNewPlayerBuyIn(activeGame.buyInAmount ?? '');
-    } catch (err: any) {
-      setError(err.message);
-    } finally {
-      setAddingPlayer(false);
-    }
+    await Promise.all(
+      selected.map((p) => api.addPlayerToGame(activeGame.gameId, p))
+    );
+    await refreshGame();
+    setShowAddPlayers(false);
   }
 
   function showPayouts() {
@@ -128,6 +122,91 @@ export default function GameManage() {
   function showPayoutStructure() {
     if (!activeGame) return;
     setPayoutStructureResult(calculatePayoutStructure(activeGame.results));
+  }
+
+  // "Finish Game": computes the payout for each paid finisher (same
+  // calculatePayouts used by the preview above) and writes it into that
+  // player's `winnings`, persisting the payout rather than just previewing
+  // it. upsertResult is a full PUT, so each call carries the player's other
+  // fields through unchanged (sourced from server-truth `activeGame.results`,
+  // never from another row's draft) with only `winnings` replaced.
+  async function handleFinishGame() {
+    if (!activeGame) return;
+    setError(null);
+    setFinishNotice(null);
+    const { payouts } = calculatePayouts(activeGame.results);
+    if (payouts.length === 0) {
+      setError('No finish positions recorded yet -- nothing to pay out.');
+      return;
+    }
+    const unplacedCount = activeGame.results.filter((r) => r.position === undefined).length;
+    if (
+      unplacedCount > 0 &&
+      !window.confirm(
+        `${unplacedCount} player(s) still don't have a finish position and won't be paid. Finish the game anyway?`
+      )
+    ) {
+      return;
+    }
+    setFinishing(true);
+    try {
+      await Promise.all(
+        payouts.map((p) => {
+          const result = activeGame.results.find((r) => r.playerId === p.playerId)!;
+          return api.upsertResult(activeGame.gameId, p.playerId, {
+            playerName: result.playerName,
+            position: result.position,
+            buyIn: result.buyIn,
+            rebuys: result.rebuys,
+            addOns: result.addOns,
+            winnings: p.payout,
+            notes: result.notes,
+          });
+        })
+      );
+      await refreshGame();
+      setFinishNotice('Game finished -- payouts saved to the winners below.');
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setFinishing(false);
+    }
+  }
+
+  async function toggleArchived() {
+    if (!activeGame) return;
+    setError(null);
+    setArchiving(true);
+    try {
+      const updated = activeGame.archived
+        ? await api.unarchiveGame(activeGame.gameId)
+        : await api.archiveGame(activeGame.gameId);
+      setActiveGame({ ...activeGame, archived: updated.archived });
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setArchiving(false);
+    }
+  }
+
+  async function handleDeleteGame() {
+    if (!activeGame) return;
+    if (
+      !window.confirm(
+        `Permanently delete this game and all ${activeGame.results.length} recorded result(s)? This cannot be undone.`
+      )
+    ) {
+      return;
+    }
+    setError(null);
+    setDeleting(true);
+    try {
+      await api.deleteGame(activeGame.gameId);
+      navigate('/admin');
+    } catch (err: any) {
+      setError(err.message);
+      setDeleting(false);
+    }
   }
 
   if (!gameId) {
@@ -145,7 +224,7 @@ export default function GameManage() {
 
   return (
     <div>
-      <h1>{activeGame.date}</h1>
+      <h1>{activeGame.date}{activeGame.archived ? ' (Archived)' : ''}</h1>
       <p className="rail-meta">
         {activeGame.location ?? 'Location TBD'} &middot; {activeGame.entrantsCount} entrants
         {activeGame.totalPot ? ` · $${activeGame.totalPot} pot` : ''}
@@ -153,39 +232,12 @@ export default function GameManage() {
       {error && <p style={{ color: 'var(--rail-red)' }}>{error}</p>}
 
       <div className="panel" style={{ marginTop: 20, marginBottom: 24 }}>
-        <h3>Add Player</h3>
-        <form onSubmit={handleAddPlayer} style={{ maxWidth: 320 }}>
-          <label htmlFor="newPlayerId">Player</label>
-          <select
-            id="newPlayerId"
-            value={newPlayerId}
-            onChange={(e) => setNewPlayerId(e.target.value)}
-          >
-            <option value="">Select a player&hellip;</option>
-            {players
-              .filter((p) => p.active && !activeGame.results.some((r) => r.playerId === p.playerId))
-              .map((p) => (
-                <option key={p.playerId} value={p.playerId}>
-                  {p.firstName} {p.lastName}
-                </option>
-              ))}
-          </select>
-          <label htmlFor="newPlayerBuyIn">Buy-in</label>
-          <input
-            id="newPlayerBuyIn"
-            type="number"
-            min={0}
-            value={newPlayerBuyIn}
-            onChange={(e) => setNewPlayerBuyIn(e.target.value === '' ? '' : Number(e.target.value))}
-          />
-          <button className="btn primary" type="submit" disabled={addingPlayer}>
-            {addingPlayer ? 'Adding...' : 'Add player'}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+          <h3>Results</h3>
+          <button className="btn" onClick={() => setShowAddPlayers(true)}>
+            Add Player(s)
           </button>
-        </form>
-      </div>
-
-      <div className="panel" style={{ marginTop: 20, marginBottom: 24 }}>
-        <h3>Results</h3>
+        </div>
         {activeGame.results.length === 0 ? (
           <div className="empty-state">No players in this game yet.</div>
         ) : (
@@ -203,13 +255,21 @@ export default function GameManage() {
             </thead>
             <tbody>
               {[...activeGame.results]
-                // Position-less (not-yet-scored) entrants sort to the end.
-                .sort((a, b) => (a.position ?? Infinity) - (b.position ?? Infinity))
+                // Still-playing entrants (no position yet) stay on top; a
+                // "Knocked Out" click gives a real (finite) position, which
+                // sorts below every -Infinity (still-playing) row instead of
+                // jumping above them -- so knocking someone out moves their
+                // row down to the bottom, never up to the top.
+                .sort((a, b) => (a.position ?? -Infinity) - (b.position ?? -Infinity))
                 .map((r) => (
                   <ResultRow
                     key={r.playerId}
                     gameId={activeGame.gameId}
                     result={r}
+                    // How many entrants still lack a finish position, r included --
+                    // the place a "Knocked Out" click on r would assign, since
+                    // everyone still standing outranks whoever leaves next.
+                    remainingCount={activeGame.results.filter((x) => x.position === undefined).length}
                     onSaved={refreshGame}
                     onError={setError}
                     onClearError={() => setError(null)}
@@ -220,6 +280,18 @@ export default function GameManage() {
         )}
       </div>
 
+      <div className="panel" style={{ marginBottom: 24 }}>
+        <h3>High Hand</h3>
+        <HighHandPanel
+          gameId={activeGame.gameId}
+          results={activeGame.results}
+          highHand={activeGame.highHand}
+          onSaved={refreshGame}
+          onError={setError}
+          onClearError={() => setError(null)}
+        />
+      </div>
+
       <div className="panel">
         <h3>Payouts</h3>
         <button className="btn" onClick={showPayouts} disabled={activeGame.results.length === 0}>
@@ -227,7 +299,15 @@ export default function GameManage() {
         </button>{' '}
         <button className="btn" onClick={showPayoutStructure} disabled={activeGame.results.length === 0}>
           Preview Payout Structure
+        </button>{' '}
+        <button
+          className="btn primary"
+          onClick={handleFinishGame}
+          disabled={finishing || activeGame.results.every((r) => r.position === undefined)}
+        >
+          {finishing ? 'Finishing...' : 'Finish Game'}
         </button>
+        {finishNotice && <p style={{ color: 'var(--brass-bright)' }}>{finishNotice}</p>}
         {payoutStructureResult && (
           <div style={{ marginTop: 12, marginBottom: 20 }}>
             <p>Total pot: ${payoutStructureResult.totalPot.toFixed(2)}</p>
@@ -299,6 +379,41 @@ export default function GameManage() {
           </div>
         )}
       </div>
+
+      <div className="panel" style={{ marginTop: 24, borderColor: 'var(--rail-red)' }}>
+        <h3>Danger Zone</h3>
+        <p className="rail-meta">
+          {activeGame.archived
+            ? 'This game is archived: it is hidden from the season history and standings, but its data is untouched.'
+            : 'Archiving hides this game from the season history and standings without deleting any data.'}
+        </p>
+        <button className="btn" onClick={toggleArchived} disabled={archiving}>
+          {archiving
+            ? 'Saving...'
+            : activeGame.archived
+              ? 'Unarchive game'
+              : 'Archive game'}
+        </button>{' '}
+        <button
+          className="btn"
+          style={{ color: 'var(--rail-red)', borderColor: 'var(--rail-red)' }}
+          onClick={handleDeleteGame}
+          disabled={deleting}
+        >
+          {deleting ? 'Deleting...' : 'Delete game permanently'}
+        </button>
+      </div>
+
+      {showAddPlayers && (
+        <AddPlayersModal
+          players={players.filter(
+            (p) => p.active && !activeGame.results.some((r) => r.playerId === p.playerId)
+          )}
+          defaultBuyIn={activeGame.buyInAmount ?? ''}
+          onClose={() => setShowAddPlayers(false)}
+          onSubmit={handleAddPlayers}
+        />
+      )}
     </div>
   );
 }
@@ -311,12 +426,14 @@ export default function GameManage() {
 function ResultRow({
   gameId,
   result,
+  remainingCount,
   onSaved,
   onError,
   onClearError,
 }: {
   gameId: string;
   result: Result;
+  remainingCount: number;
   onSaved: () => void | Promise<void>;
   onError: (message: string) => void;
   onClearError: () => void;
@@ -337,6 +454,7 @@ function ResultRow({
   const [winningsDraft, setWinningsDraft] = useState(result.winnings);
   const [notesDraft, setNotesDraft] = useState(result.notes ?? '');
   const [savingAdvanced, setSavingAdvanced] = useState(false);
+  const [knockingOut, setKnockingOut] = useState(false);
 
   const positionDirty = positionDraft !== (result.position ?? '');
   const advancedDirty =
@@ -369,6 +487,35 @@ function ResultRow({
       onError(err.message);
     } finally {
       setSavingPosition(false);
+    }
+  }
+
+  // "Knocked Out" -- a shortcut for savePosition that fills in the finish
+  // position automatically instead of the admin typing it: whoever is
+  // knocked out next finishes in `remainingCount` place, since everyone
+  // still standing (this player included, until now) necessarily outlasts
+  // them. The last player left un-eliminated has remainingCount 1, so
+  // clicking it for them correctly records a 1st-place finish -- there's no
+  // separate "declare the winner" action needed.
+  async function handleKnockOut() {
+    onClearError();
+    setKnockingOut(true);
+    try {
+      const saved = await api.upsertResult(gameId, result.playerId, {
+        playerName: result.playerName,
+        position: remainingCount,
+        buyIn: result.buyIn,
+        rebuys: result.rebuys,
+        addOns: result.addOns,
+        winnings: result.winnings,
+        notes: result.notes,
+      });
+      setPositionDraft(saved.position ?? '');
+      await onSaved();
+    } catch (err: any) {
+      onError(err.message);
+    } finally {
+      setKnockingOut(false);
     }
   }
 
@@ -447,6 +594,17 @@ function ResultRow({
         <td>{result.rebuyCount > 0 ? `${result.rebuyCount} ($${result.rebuys})` : '—'}</td>
         <td>${result.winnings}</td>
         <td>
+          {result.position === undefined && (
+            <>
+              <button className="btn primary" onClick={handleKnockOut} disabled={knockingOut}>
+                {knockingOut
+                  ? 'Saving...'
+                  : remainingCount === 1
+                    ? 'Winner!'
+                    : `Knocked Out (${ordinal(remainingCount)})`}
+              </button>{' '}
+            </>
+          )}
           <button className="btn" onClick={handleAddRebuy}>
             Add Rebuy
           </button>{' '}
@@ -507,5 +665,75 @@ function ResultRow({
         </td>
       </tr>
     </>
+  );
+}
+
+// The "High Hand" panel -- shows the current high hand (if any) plus a
+// button that opens HighHandModal to set/edit it, mirroring the Results
+// panel's "Add Player(s)" button opening AddPlayersModal. Removing a
+// recorded high hand is a single immediate action, so it stays here rather
+// than living inside the modal.
+function HighHandPanel({
+  gameId,
+  results,
+  highHand,
+  onSaved,
+  onError,
+  onClearError,
+}: {
+  gameId: string;
+  results: Result[];
+  highHand: HighHand | null | undefined;
+  onSaved: () => void | Promise<void>;
+  onError: (message: string) => void;
+  onClearError: () => void;
+}) {
+  const [removing, setRemoving] = useState(false);
+  const [showModal, setShowModal] = useState(false);
+
+  async function handleRemove() {
+    onClearError();
+    setRemoving(true);
+    try {
+      await api.deleteHighHand(gameId);
+      await onSaved();
+    } catch (err: any) {
+      onError(err.message);
+    } finally {
+      setRemoving(false);
+    }
+  }
+
+  return (
+    <div>
+      {highHand ? (
+        <div style={{ marginBottom: 20 }}>
+          <HighHandCards highHand={highHand} size="md" />
+          <button className="btn" onClick={() => setShowModal(true)}>
+            Edit high hand
+          </button>{' '}
+          <button className="btn" onClick={handleRemove} disabled={removing}>
+            {removing ? 'Removing...' : 'Remove high hand'}
+          </button>
+        </div>
+      ) : (
+        <div style={{ marginBottom: 20 }}>
+          <div className="empty-state">No high hand recorded for this game yet.</div>
+          <button className="btn primary" onClick={() => setShowModal(true)}>
+            Set high hand
+          </button>
+        </div>
+      )}
+
+      {showModal && (
+        <HighHandModal
+          gameId={gameId}
+          results={results}
+          highHand={highHand}
+          onClose={() => setShowModal(false)}
+          onSaved={onSaved}
+        />
+      )}
+    </div>
   );
 }
