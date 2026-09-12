@@ -26,7 +26,9 @@ async function computeStandings(year: number): Promise<APIGatewayProxyResult> {
       ExpressionAttributeValues: { ':pk': `YEAR#${year}` },
     })
   );
-  const games = gamesRes.Items ?? [];
+  // Archived games are excluded from standings, same as from the default
+  // history view -- archiving is meant to hide a game from active results.
+  const games = (gamesRes.Items ?? []).filter((g) => !g.archived);
 
   // 2. Get all results for each game
   const resultsPerGame = await Promise.all(

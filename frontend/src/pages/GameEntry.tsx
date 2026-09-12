@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
-import { Player, Game, GameWithResults } from '../types';
-import { calculatePayouts, PayoutRow } from '../utils/payouts';
+import { Player, Game } from '../types';
 import {
   addPlayerToRoster as addPlayerToRosterList,
   canSubmitRoster,
@@ -10,11 +10,16 @@ import {
   RosterEntry,
 } from '../utils/roster';
 
+// This page is the /admin landing view: create a new monthly game (via the
+// roster builder below) or jump into managing an existing one from the
+// games list. Everything about *managing* a specific game (results table,
+// rebuys, payouts) lives on GameManage (/admin/games/:gameId) instead, so
+// that once you're on a game's page the only thing there is that game.
 export default function GameEntry() {
+  const navigate = useNavigate();
   const [players, setPlayers] = useState<Player[]>([]);
   const [year, setYear] = useState(new Date().getFullYear());
   const [games, setGames] = useState<Game[]>([]);
-  const [activeGame, setActiveGame] = useState<GameWithResults | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -22,6 +27,7 @@ export default function GameEntry() {
   const [date, setDate] = useState('');
   const [location, setLocation] = useState('');
   const [buyInAmount, setBuyInAmount] = useState<number | ''>('');
+  const [highHandBuyIn, setHighHandBuyIn] = useState<number | ''>('');
 
   // Roster builder for the new game: players are added one at a time (with
   // their individual buy-in) into `roster`, which becomes the source of
@@ -30,6 +36,7 @@ export default function GameEntry() {
   const [roster, setRoster] = useState<RosterEntry[]>([]);
   const [rosterPlayerId, setRosterPlayerId] = useState('');
   const [rosterBuyIn, setRosterBuyIn] = useState<number | ''>('');
+  const [rosterHighHandOptIn, setRosterHighHandOptIn] = useState(false);
   const rosterTotal = computeRosterTotal(roster);
 
   // Once a game-level buy-in amount is set, default each new roster entry's
@@ -37,22 +44,6 @@ export default function GameEntry() {
   useEffect(() => {
     if (buyInAmount !== '') setRosterBuyIn(buyInAmount);
   }, [buyInAmount]);
-
-  // Result entry form
-  const [resultPlayerId, setResultPlayerId] = useState('');
-  const [position, setPosition] = useState(1);
-  const [buyIn, setBuyIn] = useState(0);
-  const [rebuys, setRebuys] = useState(0);
-  const [addOns, setAddOns] = useState(0);
-  const [winnings, setWinnings] = useState(0);
-  const [notes, setNotes] = useState('');
-
-  // Payout calculation (client-side only, computed from activeGame.results)
-  const [payoutResult, setPayoutResult] = useState<{
-    totalPot: number;
-    payouts: PayoutRow[];
-    remainder: number;
-  } | null>(null);
 
   useEffect(() => {
     api.listPlayers().then(setPlayers).catch((e) => setError(e.message));
@@ -65,38 +56,13 @@ export default function GameEntry() {
       .catch(() => setGames([]));
   }, [year]);
 
-  // Keep the result form in sync with the selected player: if they already
-  // have a result recorded for this game, load it so edits (e.g. just
-  // updating winnings) don't clobber existing buy-ins/rebuys/add-ons with
-  // blank defaults. If they don't have one yet, reset to defaults.
-  useEffect(() => {
-    if (!activeGame) return;
-    const existing = activeGame.results.find((r) => r.playerId === resultPlayerId);
-    if (existing) {
-      // existing.position can now be absent (roster entrant, finish TBD);
-      // default the form to 1 in that case rather than leaving it blank.
-      setPosition(existing.position ?? 1);
-      setBuyIn(existing.buyIn);
-      setRebuys(existing.rebuys);
-      setAddOns(existing.addOns);
-      setWinnings(existing.winnings);
-      setNotes(existing.notes ?? '');
-    } else {
-      setPosition(1);
-      setBuyIn(0);
-      setRebuys(0);
-      setAddOns(0);
-      setWinnings(0);
-      setNotes('');
-    }
-  }, [resultPlayerId, activeGame]);
-
   function addPlayerToRoster() {
     const player = players.find((p) => p.playerId === rosterPlayerId);
     const result = addPlayerToRosterList(roster, {
       playerId: rosterPlayerId,
       playerName: player ? `${player.firstName} ${player.lastName}` : '',
       buyIn: rosterBuyIn,
+      highHandOptIn: rosterHighHandOptIn,
     });
     if (!result.ok) {
       setError(result.error);
@@ -106,10 +72,19 @@ export default function GameEntry() {
     setRoster(result.roster);
     setRosterPlayerId('');
     setRosterBuyIn(buyInAmount);
+    setRosterHighHandOptIn(false);
   }
 
   function removeFromRoster(playerId: string) {
     setRoster((prev) => removeFromRosterList(prev, playerId));
+  }
+
+  function setDateToToday() {
+    const today = new Date();
+    const yyyy = today.getFullYear();
+    const mm = String(today.getMonth() + 1).padStart(2, '0');
+    const dd = String(today.getDate()).padStart(2, '0');
+    setDate(`${yyyy}-${mm}-${dd}`);
   }
 
   async function createGame(e: React.FormEvent) {
@@ -126,81 +101,23 @@ export default function GameEntry() {
         month,
         location: location || undefined,
         buyInAmount: buyInAmount === '' ? undefined : Number(buyInAmount),
+        highHandBuyIn: highHandBuyIn === '' ? undefined : Number(highHandBuyIn),
         players: roster,
       });
-      setNotice(`Game created for ${date}. Now log each player's result below.`);
-      const full = await api.getGame(g.gameId);
-      setActiveGame(full);
-      setPayoutResult(null);
+      setNotice(`Game created for ${date}. Redirecting to manage it...`);
       setGames((prev) => [g, ...prev]);
       setDate('');
       setLocation('');
       setBuyInAmount('');
+      setHighHandBuyIn('');
       setRoster([]);
       setRosterPlayerId('');
       setRosterBuyIn('');
+      setRosterHighHandOptIn(false);
+      navigate(`/admin/games/${g.gameId}`);
     } catch (err: any) {
       setError(err.message);
     }
-  }
-
-  async function openGame(gameId: string) {
-    setError(null);
-    setPayoutResult(null);
-    const g = await api.getGame(gameId);
-    setActiveGame(g);
-  }
-
-  async function submitResult(e: React.FormEvent) {
-    e.preventDefault();
-    if (!activeGame || !resultPlayerId) return;
-    setError(null);
-    try {
-      const player = players.find((p) => p.playerId === resultPlayerId);
-      await api.upsertResult(activeGame.gameId, resultPlayerId, {
-        playerName: player ? `${player.firstName} ${player.lastName}` : '',
-        position,
-        buyIn,
-        rebuys,
-        addOns,
-        winnings,
-        notes: notes || undefined,
-      });
-      const refreshed = await api.getGame(activeGame.gameId);
-      setActiveGame(refreshed);
-      setPayoutResult(null);
-      // Clearing the selected player triggers the sync effect above, which
-      // resets position/buyIn/rebuys/addOns/winnings/notes to defaults.
-      setResultPlayerId('');
-    } catch (err: any) {
-      setError(err.message);
-    }
-  }
-
-  async function removeResult(playerId: string) {
-    if (!activeGame) return;
-    await api.deleteResult(activeGame.gameId, playerId);
-    const refreshed = await api.getGame(activeGame.gameId);
-    setActiveGame(refreshed);
-    setPayoutResult(null);
-  }
-
-  async function addRebuy(playerId: string) {
-    if (!activeGame) return;
-    setError(null);
-    try {
-      await api.addRebuy(activeGame.gameId, playerId);
-      const refreshed = await api.getGame(activeGame.gameId);
-      setActiveGame(refreshed);
-      setPayoutResult(null);
-    } catch (err: any) {
-      setError(err.message);
-    }
-  }
-
-  function showPayouts() {
-    if (!activeGame) return;
-    setPayoutResult(calculatePayouts(activeGame.results));
   }
 
   return (
@@ -215,6 +132,9 @@ export default function GameEntry() {
           <label htmlFor="year">Season year</label>
           <input id="year" type="number" value={year} onChange={(e) => setYear(Number(e.target.value))} />
           <label htmlFor="date">Date</label>
+          <button className="btn" type="button" onClick={setDateToToday}>
+            Today
+          </button>
           <input id="date" type="date" value={date} onChange={(e) => setDate(e.target.value)} required />
           <label htmlFor="location">Location (optional)</label>
           <input id="location" value={location} onChange={(e) => setLocation(e.target.value)} />
@@ -225,6 +145,14 @@ export default function GameEntry() {
             min={0}
             value={buyInAmount}
             onChange={(e) => setBuyInAmount(e.target.value === '' ? '' : Number(e.target.value))}
+          />
+          <label htmlFor="highHandBuyIn">High hand pot buy-in (optional)</label>
+          <input
+            id="highHandBuyIn"
+            type="number"
+            min={0}
+            value={highHandBuyIn}
+            onChange={(e) => setHighHandBuyIn(e.target.value === '' ? '' : Number(e.target.value))}
           />
 
           <h4>Roster</h4>
@@ -247,6 +175,17 @@ export default function GameEntry() {
             value={rosterBuyIn}
             onChange={(e) => setRosterBuyIn(e.target.value === '' ? '' : Number(e.target.value))}
           />
+          {!!highHandBuyIn && (
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <input
+                type="checkbox"
+                checked={rosterHighHandOptIn}
+                onChange={(e) => setRosterHighHandOptIn(e.target.checked)}
+                style={{ width: 'auto', marginBottom: 0 }}
+              />
+              High hand pot (${highHandBuyIn})
+            </label>
+          )}
           <button className="btn" type="button" onClick={addPlayerToRoster}>
             Add player
           </button>
@@ -255,9 +194,10 @@ export default function GameEntry() {
             <div className="empty-state">No players added yet.</div>
           ) : (
             roster.map((r) => (
-              <div key={r.playerId} className="rail-row" style={{ gridTemplateColumns: '1fr auto auto' }}>
+              <div key={r.playerId} className="rail-row" style={{ gridTemplateColumns: '1fr auto auto auto' }}>
                 <div className="rail-name">{r.playerName}</div>
                 <div>${r.buyIn}</div>
+                <div className="rail-meta">{r.highHandOptIn ? 'High hand' : ''}</div>
                 <button className="btn" type="button" onClick={() => removeFromRoster(r.playerId)} aria-label={`Remove ${r.playerName} from roster`}>
                   Remove
                 </button>
@@ -281,126 +221,21 @@ export default function GameEntry() {
           <div className="empty-state">No games yet for {year}.</div>
         ) : (
           games.map((g) => (
-            <div key={g.gameId} className="rail-row" style={{ gridTemplateColumns: '1fr auto', cursor: 'pointer' }} onClick={() => openGame(g.gameId)}>
+            <div
+              key={g.gameId}
+              className="rail-row"
+              style={{ gridTemplateColumns: '1fr auto', cursor: 'pointer' }}
+              onClick={() => navigate(`/admin/games/${g.gameId}`)}
+            >
               <div>
                 <div className="rail-name">{g.date}</div>
                 <div className="rail-meta">{g.entrantsCount} entrants</div>
               </div>
-              <div className="btn">{activeGame?.gameId === g.gameId ? 'Selected' : 'Select'}</div>
+              <div className="btn">Select</div>
             </div>
           ))
         )}
       </div>
-
-      {activeGame && (
-        <div className="panel">
-          <h3>Results for {activeGame.date}</h3>
-          <table style={{ marginBottom: 20 }}>
-            <thead>
-              <tr>
-                <th>Pos</th>
-                <th>Player</th>
-                <th>Points</th>
-                <th>Buy-in</th>
-                <th>Rebuys</th>
-                <th>Winnings</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              {[...activeGame.results]
-                // Position-less (not-yet-scored) entrants sort to the end.
-                .sort((a, b) => (a.position ?? Infinity) - (b.position ?? Infinity))
-                .map((r) => (
-                  <tr key={r.playerId}>
-                    <td>{r.position}</td>
-                    <td style={{ fontFamily: 'var(--font-body)' }}>{r.playerName}</td>
-                    <td>{r.points}</td>
-                    <td>${r.buyIn}</td>
-                    <td>{r.rebuyCount > 0 ? `${r.rebuyCount} ($${r.rebuys})` : '—'}</td>
-                    <td>${r.winnings}</td>
-                    <td>
-                      <button className="btn" onClick={() => addRebuy(r.playerId)}>
-                        Add Rebuy
-                      </button>{' '}
-                      <button className="btn" onClick={() => removeResult(r.playerId)}>
-                        Remove
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-            </tbody>
-          </table>
-
-          <button className="btn" onClick={showPayouts} disabled={activeGame.results.length === 0}>
-            Calculate Payouts
-          </button>
-          {payoutResult && (
-            <div style={{ marginTop: 12, marginBottom: 20 }}>
-              <p>Total pot: ${payoutResult.totalPot.toFixed(2)}</p>
-              {payoutResult.payouts.length === 0 ? (
-                <div className="empty-state">No results recorded yet to calculate payouts.</div>
-              ) : (
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Pos</th>
-                      <th>Player</th>
-                      <th>Payout</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {payoutResult.payouts.map((p) => (
-                      <tr key={p.playerId}>
-                        <td>{p.position}</td>
-                        <td style={{ fontFamily: 'var(--font-body)' }}>{p.playerName}</td>
-                        <td>${p.payout.toFixed(2)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
-              {payoutResult.payouts.length > 0 && payoutResult.remainder !== 0 && (
-                <p>
-                  {payoutResult.remainder > 0
-                    ? `Leftover after rounding: $${payoutResult.remainder.toFixed(2)} (unpaid, e.g. keep for next game or split as you see fit)`
-                    : `Rounding pays out $${Math.abs(payoutResult.remainder).toFixed(2)} more than the pot (organizer covers the difference)`}
-                </p>
-              )}
-            </div>
-          )}
-
-          <h3>Add / update a player's result</h3>
-          <form onSubmit={submitResult}>
-            <label htmlFor="player">Player</label>
-            <select id="player" value={resultPlayerId} onChange={(e) => setResultPlayerId(e.target.value)} required>
-              <option value="">Select a player&hellip;</option>
-              {players
-                .filter((p) => p.active)
-                .map((p) => (
-                  <option key={p.playerId} value={p.playerId}>
-                    {p.firstName} {p.lastName}
-                  </option>
-                ))}
-            </select>
-            <label htmlFor="position">Finish position</label>
-            <input id="position" type="number" min={1} value={position} onChange={(e) => setPosition(Number(e.target.value))} required />
-            <label htmlFor="buyIn">Buy-in</label>
-            <input id="buyIn" type="number" min={0} value={buyIn} onChange={(e) => setBuyIn(Number(e.target.value))} />
-            <label htmlFor="rebuys">Rebuys</label>
-            <input id="rebuys" type="number" min={0} value={rebuys} onChange={(e) => setRebuys(Number(e.target.value))} />
-            <label htmlFor="addOns">Add-ons</label>
-            <input id="addOns" type="number" min={0} value={addOns} onChange={(e) => setAddOns(Number(e.target.value))} />
-            <label htmlFor="winnings">Winnings</label>
-            <input id="winnings" type="number" min={0} value={winnings} onChange={(e) => setWinnings(Number(e.target.value))} />
-            <label htmlFor="notes">Notes (bad beats, highlights, etc.)</label>
-            <textarea id="notes" value={notes} onChange={(e) => setNotes(e.target.value)} rows={2} />
-            <button className="btn primary" type="submit">
-              Save result
-            </button>
-          </form>
-        </div>
-      )}
     </div>
   );
 }

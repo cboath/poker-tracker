@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { calculatePayouts } from './payouts';
+import { calculatePayouts, calculatePayoutStructure } from './payouts';
 import { Result } from '../types';
 
 /**
@@ -228,6 +228,113 @@ describe('calculatePayouts', () => {
     expect(thirdPlace?.payout).toBe(0);
   });
 
+  describe('placesPaidOverride: admin-entered number of paid places', () => {
+    it('pays fewer places than the default tier would when overridden downward', () => {
+      // 3 scored results would normally pay all 3 (50/30/20), but the admin
+      // asks for only 2 places paid.
+      const results = [
+        makeResult({ position: 1, buyIn: 100 }),
+        makeResult({ position: 2, buyIn: 100 }),
+        makeResult({ position: 3, buyIn: 100 }),
+      ];
+
+      const { totalPot, payouts, remainder } = calculatePayouts(results, 2);
+
+      expect(totalPot).toBe(300);
+      // 2-place tier is 65/35 of the full $300 pot.
+      expect(payouts).toEqual([
+        { playerId: 'player-1', playerName: 'Player 1', position: 1, payout: 195 },
+        { playerId: 'player-2', playerName: 'Player 2', position: 2, payout: 105 },
+      ]);
+      expect(payouts.find((p) => p.position === 3)).toBeUndefined();
+      expect(remainder).toBe(0);
+    });
+
+    it('pays more places than the default 3-place cap when overridden upward, using a harmonic-decay split for the uncurated tier', () => {
+      const results = [
+        makeResult({ position: 1, buyIn: 100 }),
+        makeResult({ position: 2, buyIn: 100 }),
+        makeResult({ position: 3, buyIn: 100 }),
+        makeResult({ position: 4, buyIn: 100 }),
+      ];
+
+      const { totalPot, payouts, remainder } = calculatePayouts(results, 4);
+
+      expect(totalPot).toBe(400);
+      expect(payouts).toHaveLength(4);
+      expect(payouts.map((p) => p.position)).toEqual([1, 2, 3, 4]);
+      // Weights 1, 1/2, 1/3, 1/4 normalized: 48%, 24%, 16%, 12% of $400,
+      // each independently rounded to the nearest $5.
+      expect(payouts.map((p) => p.payout)).toEqual([190, 95, 65, 50]);
+      expect(remainder).toBeCloseTo(totalPot - (190 + 95 + 65 + 50), 9);
+    });
+
+    it('caps the override at how many results are actually scored -- cannot pay a place that does not exist yet', () => {
+      const results = [
+        makeResult({ position: 1, buyIn: 100 }),
+        makeResult({ position: 2, buyIn: 100 }),
+      ];
+
+      const { payouts } = calculatePayouts(results, 5);
+
+      expect(payouts).toHaveLength(2);
+      expect(payouts.map((p) => p.position)).toEqual([1, 2]);
+    });
+  });
+
+  describe('ties: two or more results sharing the same position', () => {
+    it('splits 1st place evenly between two co-winners at a 3-place tier', () => {
+      // 4 scored results, but only 2 distinct positions: two players tied
+      // for 1st (skip-ranked, so the next real finisher is 3rd, not 2nd).
+      const results = [
+        makeResult({ position: 1, buyIn: 100, playerId: 'player-1a', playerName: 'Player 1A' }),
+        makeResult({ position: 1, buyIn: 100, playerId: 'player-1b', playerName: 'Player 1B' }),
+        makeResult({ position: 3, buyIn: 100 }),
+        makeResult({ position: 4, buyIn: 100 }),
+      ];
+
+      const { totalPot, payouts, remainder } = calculatePayouts(results);
+
+      // paidCount = min(4 scored, 3 max tier) = 3 -> 50/30/20 of $400.
+      expect(totalPot).toBe(400);
+      // The 1st-place pair occupies slots 1 and 2 (50% + 30% = 80% of $400
+      // = $320, rounded per-slot to $200 + $120 = $320), split evenly: $160
+      // each. Position-3 finisher occupies slot 3 alone (20% of $400 = $80).
+      // Position-4 finisher is entirely outside paidCount (3) and unpaid.
+      expect(payouts).toEqual([
+        { playerId: 'player-1a', playerName: 'Player 1A', position: 1, payout: 160 },
+        { playerId: 'player-1b', playerName: 'Player 1B', position: 1, payout: 160 },
+        { playerId: 'player-3', playerName: 'Player 3', position: 3, payout: 80 },
+      ]);
+      expect(payouts.find((p) => p.playerId === 'player-4')).toBeUndefined();
+      expect(remainder).toBe(0);
+    });
+
+    it('splits only the paid portion when a tied group straddles the money bubble', () => {
+      // 4 scored results -> paidCount capped at 3 (50/30/20). Two players
+      // are tied for what would be 3rd/4th (slots 3 and 4), but slot 4
+      // doesn't exist within paidCount=3, so only slot 3's share is split
+      // between them -- the "4th" portion is worth $0, not double-counted.
+      const results = [
+        makeResult({ position: 1, buyIn: 100 }),
+        makeResult({ position: 2, buyIn: 100 }),
+        makeResult({ position: 3, buyIn: 100, playerId: 'player-3a', playerName: 'Player 3A' }),
+        makeResult({ position: 3, buyIn: 100, playerId: 'player-3b', playerName: 'Player 3B' }),
+      ];
+
+      const { totalPot, payouts, remainder } = calculatePayouts(results);
+
+      expect(totalPot).toBe(400);
+      expect(payouts).toEqual([
+        { playerId: 'player-1', playerName: 'Player 1', position: 1, payout: 200 },
+        { playerId: 'player-2', playerName: 'Player 2', position: 2, payout: 120 },
+        { playerId: 'player-3a', playerName: 'Player 3A', position: 3, payout: 40 },
+        { playerId: 'player-3b', playerName: 'Player 3B', position: 3, payout: 40 },
+      ]);
+      expect(remainder).toBe(0);
+    });
+  });
+
   describe('nearest-$5 rounding: individual payouts are cash-friendly, remainder tracks the drift', () => {
     /**
      * The payout rule changed: each place's payout is now rounded
@@ -386,6 +493,250 @@ describe('calculatePayouts', () => {
           assertInvariantsHold(dollars, paidCount);
         }
       });
+    });
+  });
+});
+
+describe('calculatePayoutStructure', () => {
+  /**
+   * Builds an unscored roster entrant -- a `Result` with a buy-in but no
+   * `position` yet, exactly like a player added to the roster at
+   * game-creation time who hasn't finished (or even started) the
+   * tournament. Reuses `makeResult` for the boilerplate fields, then blows
+   * away `position` since `calculatePayoutStructure` must work without it.
+   */
+  function makeUnscoredResult(
+    overrides: Partial<Result> & { playerId: string }
+  ): Result {
+    return { ...makeResult({ position: 1, ...overrides }), position: undefined };
+  }
+
+  it('returns an empty structure, zero pot, and zero remainder for zero entrants, without throwing', () => {
+    const { totalPot, structure, remainder } = calculatePayoutStructure([]);
+
+    expect(totalPot).toBe(0);
+    expect(structure).toEqual([]);
+    expect(remainder).toBe(0);
+  });
+
+  it('previews a 2-place 65/35 structure for a fully unscored 2-entrant roster, unlike calculatePayouts which pays nobody yet', () => {
+    // Two players are on the roster with buy-ins recorded, but neither has
+    // busted or been assigned a finish position -- this is the core new
+    // scenario calculatePayoutStructure exists for.
+    const results = [
+      makeUnscoredResult({ playerId: 'player-a', playerName: 'Player A', buyIn: 100 }),
+      makeUnscoredResult({ playerId: 'player-b', playerName: 'Player B', buyIn: 100 }),
+    ];
+
+    const { totalPot, structure, remainder } = calculatePayoutStructure(results);
+
+    expect(totalPot).toBe(200);
+    expect(structure).toEqual([
+      { place: 1, payout: 130 },
+      { place: 2, payout: 70 },
+    ]);
+    expect(remainder).toBe(0);
+
+    // The whole point of this function: it produces real, non-empty payout
+    // amounts pre-scoring, in direct contrast to `calculatePayouts`, which
+    // returns an empty `payouts` array for this exact same input because it
+    // requires a `position` to know who to pay.
+    expect(calculatePayouts(results).payouts).toEqual([]);
+  });
+
+  it('previews a 3-place 50/30/20 structure for a fully unscored 3-entrant roster', () => {
+    const results = [
+      makeUnscoredResult({ playerId: 'player-a', playerName: 'Player A', buyIn: 100 }),
+      makeUnscoredResult({ playerId: 'player-b', playerName: 'Player B', buyIn: 100 }),
+      makeUnscoredResult({ playerId: 'player-c', playerName: 'Player C', buyIn: 100 }),
+    ];
+
+    const { totalPot, structure, remainder } = calculatePayoutStructure(results);
+
+    expect(totalPot).toBe(300);
+    expect(structure).toEqual([
+      { place: 1, payout: 150 },
+      { place: 2, payout: 90 },
+      { place: 3, payout: 60 },
+    ]);
+    expect(remainder).toBe(0);
+    expect(calculatePayouts(results).payouts).toEqual([]);
+  });
+
+  it('keys the tier off total roster size (results.length), not scored count, when only some entrants have finished', () => {
+    // 5 entrants on the roster; only the 1st-place finisher has actually
+    // been scored so far. calculatePayouts would only have 1 scored result
+    // to work with (winner-take-all, paidCount=1), but the structure
+    // preview must still reflect all 5 roster spots -- capped at the
+    // 3-place max tier -- since that's what will eventually be paid out.
+    const results = [
+      makeResult({ position: 1, buyIn: 100 }),
+      makeUnscoredResult({ playerId: 'player-2', playerName: 'Player 2', buyIn: 100 }),
+      makeUnscoredResult({ playerId: 'player-3', playerName: 'Player 3', buyIn: 100 }),
+      makeUnscoredResult({ playerId: 'player-4', playerName: 'Player 4', buyIn: 100 }),
+      makeUnscoredResult({ playerId: 'player-5', playerName: 'Player 5', buyIn: 100 }),
+    ];
+
+    const { totalPot, structure, remainder } = calculatePayoutStructure(results);
+
+    expect(totalPot).toBe(500);
+    // 3-place (50/30/20) tier, NOT the 1-place winner-take-all tier that
+    // calculatePayouts would use with only 1 scored result.
+    expect(structure).toEqual([
+      { place: 1, payout: 250 },
+      { place: 2, payout: 150 },
+      { place: 3, payout: 100 },
+    ]);
+    expect(remainder).toBe(0);
+
+    // Contrast directly: calculatePayouts only knows about the one scored
+    // finisher and pays them the entire pot under the 1-place tier.
+    expect(calculatePayouts(results).payouts).toEqual([
+      { playerId: 'player-1', playerName: 'Player 1', position: 1, payout: 500 },
+    ]);
+  });
+
+  it('caps the structure at 3 places even when many more entrants are on the roster', () => {
+    const results = Array.from({ length: 6 }, (_, i) =>
+      makeUnscoredResult({ playerId: `player-${i + 1}`, playerName: `Player ${i + 1}`, buyIn: 50 })
+    );
+
+    const { totalPot, structure } = calculatePayoutStructure(results);
+
+    expect(totalPot).toBe(300);
+    expect(structure).toHaveLength(3);
+    expect(structure.map((s) => s.place)).toEqual([1, 2, 3]);
+    // 50/30/20 of the full $300 pot (all 6 entrants' buy-ins), not just the
+    // top 3's contributions.
+    expect(structure).toEqual([
+      { place: 1, payout: 150 },
+      { place: 2, payout: 90 },
+      { place: 3, payout: 60 },
+    ]);
+  });
+
+  it('previews winner-take-all (100%) for a single-entrant roster', () => {
+    const results = [makeUnscoredResult({ playerId: 'player-a', playerName: 'Player A', buyIn: 50 })];
+
+    const { totalPot, structure, remainder } = calculatePayoutStructure(results);
+
+    expect(totalPot).toBe(50);
+    expect(structure).toEqual([{ place: 1, payout: 50 }]);
+    expect(remainder).toBe(0);
+  });
+
+  it('previews the 65/35 split for a two-entrant roster', () => {
+    const results = [
+      makeUnscoredResult({ playerId: 'player-a', playerName: 'Player A', buyIn: 100 }),
+      makeUnscoredResult({ playerId: 'player-b', playerName: 'Player B', buyIn: 100 }),
+    ];
+
+    const { structure } = calculatePayoutStructure(results);
+
+    expect(structure).toEqual([
+      { place: 1, payout: 130 },
+      { place: 2, payout: 70 },
+    ]);
+  });
+
+  it('numbers places 1, 2, 3 in order regardless of any player identity, since none exists in the input needed to produce output', () => {
+    const results = Array.from({ length: 3 }, (_, i) =>
+      makeUnscoredResult({ playerId: `player-${i + 1}`, playerName: `Player ${i + 1}`, buyIn: 100 })
+    );
+
+    const { structure } = calculatePayoutStructure(results);
+
+    expect(structure.map((row) => row.place)).toEqual([1, 2, 3]);
+  });
+
+  it('produces rows with only place and payout keys -- no playerId/playerName leak through, since finishers are unknown pre-scoring', () => {
+    const results = [
+      makeUnscoredResult({ playerId: 'player-a', playerName: 'Player A', buyIn: 100 }),
+      makeUnscoredResult({ playerId: 'player-b', playerName: 'Player B', buyIn: 100 }),
+      makeUnscoredResult({ playerId: 'player-c', playerName: 'Player C', buyIn: 100 }),
+    ];
+
+    const { structure } = calculatePayoutStructure(results);
+
+    expect(structure.length).toBeGreaterThan(0);
+    structure.forEach((row) => {
+      expect(Object.keys(row).sort()).toEqual(['payout', 'place']);
+      expect(row).not.toHaveProperty('playerId');
+      expect(row).not.toHaveProperty('playerName');
+      expect(row).not.toHaveProperty('position');
+    });
+  });
+
+  it('matches calculatePayouts place-for-place once every roster entrant has been scored (within the max payout tier)', () => {
+    // Once the tournament is fully closed out (every entrant has a finish
+    // position) and the entrant count doesn't exceed the max payout tier,
+    // the pre-scoring preview and the real payout calculation must agree on
+    // dollar amounts per place -- proving the preview genuinely predicts
+    // the eventual result rather than using different math.
+    const results = [
+      makeResult({ position: 3, buyIn: 100 }),
+      makeResult({ position: 1, buyIn: 100 }),
+      makeResult({ position: 2, buyIn: 100 }),
+    ];
+
+    const structurePayouts = calculatePayoutStructure(results).structure.map((row) => row.payout);
+    const actualPayouts = calculatePayouts(results).payouts.map((row) => row.payout);
+
+    expect(structurePayouts).toEqual(actualPayouts);
+  });
+
+  describe('nearest-$5 rounding and remainder, mirroring calculatePayouts', () => {
+    // The rounding rule itself is exhaustively swept for calculatePayouts
+    // above (via the shared roundTierPayouts/calculateRemainder helpers), so
+    // this is a handful of representative spot-checks proving
+    // calculatePayoutStructure exhibits the same behavior, not a duplicate
+    // of the full sweep.
+
+    it('rounds a $50 pot at the 65/35 tier up to $35/$20, overshooting by the full $5 bound', () => {
+      // True shares are 32.5 / 17.5 -- both exact $5 ties, both round up.
+      const results = [
+        makeUnscoredResult({ playerId: 'player-a', playerName: 'Player A', buyIn: 25 }),
+        makeUnscoredResult({ playerId: 'player-b', playerName: 'Player B', buyIn: 25 }),
+      ];
+
+      const { totalPot, structure, remainder } = calculatePayoutStructure(results);
+
+      expect(totalPot).toBe(50);
+      expect(structure).toEqual([
+        { place: 1, payout: 35 },
+        { place: 2, payout: 20 },
+      ]);
+      expect(remainder).toBe(-5);
+    });
+
+    it('rounds a $10 pot at the 50/30/20 tier to $5/$5/$0 with zero net remainder', () => {
+      // True shares are 5 / 3 / 2. 3 rounds up to 5, 2 rounds down to 0 --
+      // the two errors happen to cancel, landing remainder back at exactly 0.
+      const results = [
+        makeUnscoredResult({ playerId: 'player-a', playerName: 'Player A', buyIn: 3.34 }),
+        makeUnscoredResult({ playerId: 'player-b', playerName: 'Player B', buyIn: 3.33 }),
+        makeUnscoredResult({ playerId: 'player-c', playerName: 'Player C', buyIn: 3.33 }),
+      ];
+
+      const { totalPot, structure, remainder } = calculatePayoutStructure(results);
+
+      expect(totalPot).toBeCloseTo(10, 2);
+      expect(structure.map((row) => row.payout)).toEqual([5, 5, 0]);
+      expect(remainder).toBeCloseTo(0, 2);
+    });
+
+    it('every payout is an exact multiple of $5, and remainder equals totalPot minus their sum', () => {
+      const results = [
+        makeUnscoredResult({ playerId: 'player-a', playerName: 'Player A', buyIn: 283.47 }),
+      ];
+
+      const { totalPot, structure, remainder } = calculatePayoutStructure(results);
+
+      structure.forEach((row) => {
+        expect(row.payout % 5).toBe(0);
+      });
+      const sum = structure.reduce((s, row) => s + row.payout, 0);
+      expect(remainder).toBeCloseTo(totalPot - sum, 9);
     });
   });
 });

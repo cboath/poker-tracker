@@ -8,9 +8,22 @@ import {
   PutCommand,
   QueryCommand,
   DeleteCommand,
+  UpdateCommand,
   jsonResponse,
 } from '../db';
-import { Game, Result } from '../types';
+import { Card, Game, HighHand, Rank, Result, Suit } from '../types';
+
+const VALID_RANKS: Rank[] = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A'];
+const VALID_SUITS: Suit[] = ['hearts', 'diamonds', 'clubs', 'spades'];
+
+function isValidCard(c: unknown): c is Card {
+  const cand = c as Partial<Card> | null | undefined;
+  return (
+    !!cand &&
+    VALID_RANKS.includes(cand.rank as Rank) &&
+    VALID_SUITS.includes(cand.suit as Suit)
+  );
+}
 
 export const handler = async (
   event: APIGatewayProxyEvent
@@ -23,7 +36,10 @@ export const handler = async (
   try {
     if (resource === '/years' && method === 'GET') return await listYears();
     if (resource === '/years/{year}/games' && method === 'GET' && year)
-      return await listGamesForYear(Number(year));
+      return await listGamesForYear(
+        Number(year),
+        event.queryStringParameters?.includeArchived === 'true'
+      );
     if (resource === '/years/{year}/games' && method === 'POST' && year)
       return await createGame(Number(year), event);
     if (resource === '/games/{gameId}' && method === 'GET' && gameId)
@@ -32,6 +48,12 @@ export const handler = async (
       return await updateGame(gameId, event);
     if (resource === '/games/{gameId}' && method === 'DELETE' && gameId)
       return await deleteGame(gameId);
+    if (resource === '/games/{gameId}/players' && method === 'POST' && gameId)
+      return await addPlayerToGame(gameId, event);
+    if (resource === '/games/{gameId}/highhand' && method === 'PUT' && gameId)
+      return await setHighHand(gameId, event);
+    if (resource === '/games/{gameId}/highhand' && method === 'DELETE' && gameId)
+      return await deleteHighHand(gameId);
 
     return jsonResponse(404, { message: 'Not found' });
   } catch (err) {
@@ -55,7 +77,10 @@ async function listYears(): Promise<APIGatewayProxyResult> {
   );
 }
 
-async function listGamesForYear(year: number): Promise<APIGatewayProxyResult> {
+async function listGamesForYear(
+  year: number,
+  includeArchived: boolean
+): Promise<APIGatewayProxyResult> {
   const result = await ddb.send(
     new QueryCommand({
       TableName: TABLE_NAME,
@@ -64,13 +89,18 @@ async function listGamesForYear(year: number): Promise<APIGatewayProxyResult> {
       ExpressionAttributeValues: { ':pk': `YEAR#${year}` },
     })
   );
-  return jsonResponse(200, result.Items ?? []);
+  const items = result.Items ?? [];
+  return jsonResponse(
+    200,
+    includeArchived ? items : items.filter((i) => !i.archived)
+  );
 }
 
 interface RosterPlayerInput {
   playerId: string;
   playerName: string;
   buyIn: number;
+  highHandOptIn?: boolean;
 }
 
 function isValidRosterPlayer(p: unknown): p is RosterPlayerInput {
@@ -83,7 +113,8 @@ function isValidRosterPlayer(p: unknown): p is RosterPlayerInput {
     cand.playerName.length > 0 &&
     typeof cand.buyIn === 'number' &&
     Number.isFinite(cand.buyIn) &&
-    cand.buyIn >= 0
+    cand.buyIn >= 0 &&
+    (cand.highHandOptIn === undefined || typeof cand.highHandOptIn === 'boolean')
   );
 }
 
@@ -155,6 +186,7 @@ async function createGame(
     notes: body.notes,
     createdBy,
     createdAt: new Date().toISOString(),
+    highHandBuyIn: body.highHandBuyIn,
   };
 
   await ddb.send(
@@ -203,6 +235,7 @@ async function createGame(
           addOns: 0,
           winnings: 0,
           points: 0, // not yet scored; position is unset
+          highHandOptIn: p.highHandOptIn ?? false,
         };
         return ddb.send(
           new PutCommand({
@@ -222,8 +255,87 @@ async function createGame(
   return jsonResponse(201, game);
 }
 
+// Adds a single player to a game that already exists -- the counterpart to
+// createGame's roster write for games that were created without a roster (or
+// that need a late addition once other players have already been scored).
+// This intentionally mirrors createGame's per-roster-player write byte for
+// byte (same Result shape, same GSI keys) rather than inventing a second
+// convention for "roster entrant, finish TBD".
+async function addPlayerToGame(
+  gameId: string,
+  event: APIGatewayProxyEvent
+): Promise<APIGatewayProxyResult> {
+  const body = JSON.parse(event.body ?? '{}');
+
+  if (!isValidRosterPlayer(body)) {
+    return jsonResponse(400, {
+      message:
+        'playerId, playerName, and a non-negative numeric buyIn are required',
+    });
+  }
+
+  const gameRes = await ddb.send(
+    new GetCommand({ TableName: TABLE_NAME, Key: Keys.game(gameId) })
+  );
+  if (!gameRes.Item) return jsonResponse(404, { message: 'Game not found' });
+  const game = gameRes.Item as Game;
+
+  // Don't silently clobber an existing result -- it may already carry a real
+  // finish position/winnings recorded via PUT /games/{gameId}/results/{playerId}.
+  // Adding a player is only valid for a player not already on this game's
+  // roster.
+  const existingResultRes = await ddb.send(
+    new GetCommand({ TableName: TABLE_NAME, Key: Keys.result(gameId, body.playerId) })
+  );
+  if (existingResultRes.Item) {
+    return jsonResponse(409, { message: 'Player is already in this game' });
+  }
+
+  const result: Result = {
+    gameId,
+    playerId: body.playerId,
+    playerName: body.playerName,
+    buyIn: body.buyIn,
+    rebuys: 0,
+    rebuyCount: 0,
+    addOns: 0,
+    winnings: 0,
+    points: 0, // not yet scored; position is unset
+    highHandOptIn: body.highHandOptIn ?? false,
+  };
+
+  await ddb.send(
+    new PutCommand({
+      TableName: TABLE_NAME,
+      Item: {
+        ...Keys.result(gameId, body.playerId),
+        GSI1PK: `PLAYER#${body.playerId}`,
+        GSI1SK: `YEAR#${game.year}#GAME#${gameId}`,
+        ...result,
+      },
+    })
+  );
+
+  // Keep the game's denormalized entrantsCount/totalPot in sync. ADD treats
+  // a missing numeric attribute as 0, so this is safe even for games created
+  // before totalPot existed on every item. Like updateGame, this does NOT
+  // retroactively recompute points on any already-scored results for this
+  // game -- that's an accepted pre-existing limitation, not something fixed
+  // here.
+  await ddb.send(
+    new UpdateCommand({
+      TableName: TABLE_NAME,
+      Key: Keys.game(gameId),
+      UpdateExpression: 'ADD entrantsCount :one, totalPot :buyIn',
+      ExpressionAttributeValues: { ':one': 1, ':buyIn': body.buyIn },
+    })
+  );
+
+  return jsonResponse(201, result);
+}
+
 async function getGameWithResults(gameId: string): Promise<APIGatewayProxyResult> {
-  const [gameRes, resultsRes] = await Promise.all([
+  const [gameRes, resultsRes, highHandRes] = await Promise.all([
     ddb.send(new GetCommand({ TableName: TABLE_NAME, Key: Keys.game(gameId) })),
     ddb.send(
       new QueryCommand({
@@ -235,6 +347,7 @@ async function getGameWithResults(gameId: string): Promise<APIGatewayProxyResult
         },
       })
     ),
+    ddb.send(new GetCommand({ TableName: TABLE_NAME, Key: Keys.highHand(gameId) })),
   ]);
 
   if (!gameRes.Item) return jsonResponse(404, { message: 'Game not found' });
@@ -242,7 +355,70 @@ async function getGameWithResults(gameId: string): Promise<APIGatewayProxyResult
   return jsonResponse(200, {
     ...gameRes.Item,
     results: resultsRes.Items ?? [],
+    highHand: highHandRes.Item ?? null,
   });
+}
+
+// Upserts the single high-hand record for a game -- one best-hand-of-the-
+// night per game, same "PUT replaces the whole record" convention as
+// upsertResult in results.ts, rather than a history of candidate hands.
+async function setHighHand(
+  gameId: string,
+  event: APIGatewayProxyEvent
+): Promise<APIGatewayProxyResult> {
+  const body = JSON.parse(event.body ?? '{}');
+
+  if (typeof body.playerId !== 'string' || body.playerId.length === 0) {
+    return jsonResponse(400, { message: 'playerId is required' });
+  }
+  if (typeof body.playerName !== 'string' || body.playerName.length === 0) {
+    return jsonResponse(400, { message: 'playerName is required' });
+  }
+  if (!Array.isArray(body.cards) || body.cards.length !== 5 || !body.cards.every(isValidCard)) {
+    return jsonResponse(400, {
+      message: 'cards must be an array of exactly 5 valid {rank, suit} cards',
+    });
+  }
+  const cardKeys = new Set(body.cards.map((c: Card) => `${c.rank}-${c.suit}`));
+  if (cardKeys.size !== body.cards.length) {
+    return jsonResponse(400, { message: 'cards must not repeat the same card twice' });
+  }
+  if (
+    body.amount !== undefined &&
+    (typeof body.amount !== 'number' || !Number.isFinite(body.amount) || body.amount < 0)
+  ) {
+    return jsonResponse(400, { message: 'amount must be a non-negative number' });
+  }
+
+  const gameRes = await ddb.send(
+    new GetCommand({ TableName: TABLE_NAME, Key: Keys.game(gameId) })
+  );
+  if (!gameRes.Item) return jsonResponse(404, { message: 'Game not found' });
+
+  const highHand: HighHand = {
+    gameId,
+    playerId: body.playerId,
+    playerName: body.playerName,
+    cards: body.cards,
+    amount: body.amount,
+    notes: body.notes,
+  };
+
+  await ddb.send(
+    new PutCommand({
+      TableName: TABLE_NAME,
+      Item: { ...Keys.highHand(gameId), ...highHand },
+    })
+  );
+
+  return jsonResponse(200, highHand);
+}
+
+async function deleteHighHand(gameId: string): Promise<APIGatewayProxyResult> {
+  await ddb.send(
+    new DeleteCommand({ TableName: TABLE_NAME, Key: Keys.highHand(gameId) })
+  );
+  return jsonResponse(200, { message: 'High hand removed' });
 }
 
 async function updateGame(
@@ -264,6 +440,14 @@ async function updateGame(
     // Changing entrantsCount does NOT retroactively recompute existing results'
     // points -- re-save each result via the results endpoint if you need that.
     entrantsCount: body.entrantsCount ?? existing.Item.entrantsCount,
+    // Explicit undefined check (not ??) so callers can un-archive by passing
+    // `archived: false`, which ?? would treat as "not provided".
+    archived: body.archived !== undefined ? body.archived : existing.Item.archived,
+    highHandBuyIn: body.highHandBuyIn ?? existing.Item.highHandBuyIn,
+    // Blind timer state is persisted here too (the hand timer's Start/Pause/
+    // Skip/Reset actions all PUT their new state through this same endpoint)
+    // so it survives a page refresh -- see BlindTimerState in ../types.ts.
+    blindTimer: body.blindTimer ?? existing.Item.blindTimer,
   };
 
   await ddb.send(new PutCommand({ TableName: TABLE_NAME, Item: updated }));

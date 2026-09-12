@@ -21,6 +21,20 @@ export interface Game {
   notes?: string;
   createdBy?: string;
   createdAt: string;
+  archived?: boolean; // hidden from the default history/standings views but not deleted
+  highHandBuyIn?: number; // per-player buy-in for the high hand side pot, set at creation
+  blindTimer?: BlindTimerState;
+}
+
+// Live blind-clock state for the game page's hand timer. Persisted on `Game`
+// (via the existing PUT /games/{gameId} merge) so it survives a page
+// refresh -- see updateGame in handlers/games.ts.
+export interface BlindTimerState {
+  levelIndex: number; // 0-based index into utils/blinds.ts's BLIND_LEVELS
+  levelDurationSeconds: number; // adjustable; defaults to 1200 (20 min)
+  running: boolean;
+  levelEndsAt?: string; // ISO timestamp; set only while running
+  remainingSeconds: number; // snapshot used while paused/stopped
 }
 
 // A `Result` row now models two distinct lifecycle states of the same entity:
@@ -50,6 +64,7 @@ export interface Result {
   winnings: number;
   points: number; // computed: entrantsCount - position + 1 (min 1); 0 if not yet scored
   notes?: string;
+  highHandOptIn?: boolean; // whether this player bought into the game's high hand side pot
 }
 
 export interface StandingRow {
@@ -66,6 +81,28 @@ export interface StandingRow {
 
 export interface YearMarker {
   year: number;
+}
+
+export type Suit = 'hearts' | 'diamonds' | 'clubs' | 'spades';
+export type Rank = '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' | '10' | 'J' | 'Q' | 'K' | 'A';
+
+export interface Card {
+  rank: Rank;
+  suit: Suit;
+}
+
+// One high-hand record per game -- the best hand shown down that night,
+// self-reported by the table. Storing the raw 5 cards (not a precomputed
+// ranking label) keeps this the single source of truth; both frontend and
+// any future backend consumer derive the hand's rank (e.g. "Full House")
+// from `cards` rather than trusting a stored string that could drift.
+export interface HighHand {
+  gameId: string;
+  playerId: string;
+  playerName: string; // denormalized for easy display, same convention as Result
+  cards: Card[]; // exactly 5 cards
+  amount?: number; // optional bonus/payout awarded for the high hand
+  notes?: string;
 }
 
 // Helper to compute points per the agreed formula:

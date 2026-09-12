@@ -19,6 +19,7 @@ export const TABLE_NAME = process.env.TABLE_NAME as string;
 // Player profile:   PK=PLAYER#<id>   SK=PROFILE          GSI1PK=PLAYERS        GSI1SK=PLAYER#<id>
 // Game metadata:    PK=GAME#<id>     SK=METADATA          GSI1PK=YEAR#<year>    GSI1SK=GAME#<date>#<id>
 // Result:           PK=GAME#<id>     SK=RESULT#<playerId> GSI1PK=PLAYER#<id>    GSI1SK=YEAR#<year>#GAME#<gameId>
+// High hand:        PK=GAME#<id>     SK=HIGHHAND
 // Year marker:       PK=YEARS         SK=YEAR#<year>
 
 export const Keys = {
@@ -32,6 +33,7 @@ export const Keys = {
   }),
   resultsForGame: (gameId: string) => ({ PK: `GAME#${gameId}` }),
   resultsForPlayerGsi: (playerId: string) => ({ GSI1PK: `PLAYER#${playerId}` }),
+  highHand: (gameId: string) => ({ PK: `GAME#${gameId}`, SK: 'HIGHHAND' }),
   years: () => ({ PK: 'YEARS' }),
   yearMarker: (year: number) => ({ PK: 'YEARS', SK: `YEAR#${year}` }),
 };

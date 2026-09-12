@@ -1,4 +1,4 @@
-# The Yearly Grind — Monthly Poker Tournament Tracker
+# Deliberate Donkeys — Monthly Poker Tournament Tracker
 
 A full-stack app for tracking a monthly home poker tournament and ranking
 players across the season.
