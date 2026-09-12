@@ -228,6 +228,113 @@ describe('calculatePayouts', () => {
     expect(thirdPlace?.payout).toBe(0);
   });
 
+  describe('placesPaidOverride: admin-entered number of paid places', () => {
+    it('pays fewer places than the default tier would when overridden downward', () => {
+      // 3 scored results would normally pay all 3 (50/30/20), but the admin
+      // asks for only 2 places paid.
+      const results = [
+        makeResult({ position: 1, buyIn: 100 }),
+        makeResult({ position: 2, buyIn: 100 }),
+        makeResult({ position: 3, buyIn: 100 }),
+      ];
+
+      const { totalPot, payouts, remainder } = calculatePayouts(results, 2);
+
+      expect(totalPot).toBe(300);
+      // 2-place tier is 65/35 of the full $300 pot.
+      expect(payouts).toEqual([
+        { playerId: 'player-1', playerName: 'Player 1', position: 1, payout: 195 },
+        { playerId: 'player-2', playerName: 'Player 2', position: 2, payout: 105 },
+      ]);
+      expect(payouts.find((p) => p.position === 3)).toBeUndefined();
+      expect(remainder).toBe(0);
+    });
+
+    it('pays more places than the default 3-place cap when overridden upward, using a harmonic-decay split for the uncurated tier', () => {
+      const results = [
+        makeResult({ position: 1, buyIn: 100 }),
+        makeResult({ position: 2, buyIn: 100 }),
+        makeResult({ position: 3, buyIn: 100 }),
+        makeResult({ position: 4, buyIn: 100 }),
+      ];
+
+      const { totalPot, payouts, remainder } = calculatePayouts(results, 4);
+
+      expect(totalPot).toBe(400);
+      expect(payouts).toHaveLength(4);
+      expect(payouts.map((p) => p.position)).toEqual([1, 2, 3, 4]);
+      // Weights 1, 1/2, 1/3, 1/4 normalized: 48%, 24%, 16%, 12% of $400,
+      // each independently rounded to the nearest $5.
+      expect(payouts.map((p) => p.payout)).toEqual([190, 95, 65, 50]);
+      expect(remainder).toBeCloseTo(totalPot - (190 + 95 + 65 + 50), 9);
+    });
+
+    it('caps the override at how many results are actually scored -- cannot pay a place that does not exist yet', () => {
+      const results = [
+        makeResult({ position: 1, buyIn: 100 }),
+        makeResult({ position: 2, buyIn: 100 }),
+      ];
+
+      const { payouts } = calculatePayouts(results, 5);
+
+      expect(payouts).toHaveLength(2);
+      expect(payouts.map((p) => p.position)).toEqual([1, 2]);
+    });
+  });
+
+  describe('ties: two or more results sharing the same position', () => {
+    it('splits 1st place evenly between two co-winners at a 3-place tier', () => {
+      // 4 scored results, but only 2 distinct positions: two players tied
+      // for 1st (skip-ranked, so the next real finisher is 3rd, not 2nd).
+      const results = [
+        makeResult({ position: 1, buyIn: 100, playerId: 'player-1a', playerName: 'Player 1A' }),
+        makeResult({ position: 1, buyIn: 100, playerId: 'player-1b', playerName: 'Player 1B' }),
+        makeResult({ position: 3, buyIn: 100 }),
+        makeResult({ position: 4, buyIn: 100 }),
+      ];
+
+      const { totalPot, payouts, remainder } = calculatePayouts(results);
+
+      // paidCount = min(4 scored, 3 max tier) = 3 -> 50/30/20 of $400.
+      expect(totalPot).toBe(400);
+      // The 1st-place pair occupies slots 1 and 2 (50% + 30% = 80% of $400
+      // = $320, rounded per-slot to $200 + $120 = $320), split evenly: $160
+      // each. Position-3 finisher occupies slot 3 alone (20% of $400 = $80).
+      // Position-4 finisher is entirely outside paidCount (3) and unpaid.
+      expect(payouts).toEqual([
+        { playerId: 'player-1a', playerName: 'Player 1A', position: 1, payout: 160 },
+        { playerId: 'player-1b', playerName: 'Player 1B', position: 1, payout: 160 },
+        { playerId: 'player-3', playerName: 'Player 3', position: 3, payout: 80 },
+      ]);
+      expect(payouts.find((p) => p.playerId === 'player-4')).toBeUndefined();
+      expect(remainder).toBe(0);
+    });
+
+    it('splits only the paid portion when a tied group straddles the money bubble', () => {
+      // 4 scored results -> paidCount capped at 3 (50/30/20). Two players
+      // are tied for what would be 3rd/4th (slots 3 and 4), but slot 4
+      // doesn't exist within paidCount=3, so only slot 3's share is split
+      // between them -- the "4th" portion is worth $0, not double-counted.
+      const results = [
+        makeResult({ position: 1, buyIn: 100 }),
+        makeResult({ position: 2, buyIn: 100 }),
+        makeResult({ position: 3, buyIn: 100, playerId: 'player-3a', playerName: 'Player 3A' }),
+        makeResult({ position: 3, buyIn: 100, playerId: 'player-3b', playerName: 'Player 3B' }),
+      ];
+
+      const { totalPot, payouts, remainder } = calculatePayouts(results);
+
+      expect(totalPot).toBe(400);
+      expect(payouts).toEqual([
+        { playerId: 'player-1', playerName: 'Player 1', position: 1, payout: 200 },
+        { playerId: 'player-2', playerName: 'Player 2', position: 2, payout: 120 },
+        { playerId: 'player-3a', playerName: 'Player 3A', position: 3, payout: 40 },
+        { playerId: 'player-3b', playerName: 'Player 3B', position: 3, payout: 40 },
+      ]);
+      expect(remainder).toBe(0);
+    });
+  });
+
   describe('nearest-$5 rounding: individual payouts are cash-friendly, remainder tracks the drift', () => {
     /**
      * The payout rule changed: each place's payout is now rounded

@@ -10,15 +10,23 @@ import { Player } from '../types';
 export default function AddPlayersModal({
   players,
   defaultBuyIn,
+  highHandBuyIn,
   onClose,
   onSubmit,
 }: {
   players: Player[];
   defaultBuyIn: number | '';
+  // The game's per-player high hand buy-in, if one was set at creation --
+  // shown next to each player's opt-in checkbox so the admin knows what
+  // checking it costs. Undefined/0 means this game has no high hand pot.
+  highHandBuyIn?: number;
   onClose: () => void;
-  onSubmit: (selected: { playerId: string; playerName: string; buyIn: number }[]) => Promise<void>;
+  onSubmit: (
+    selected: { playerId: string; playerName: string; buyIn: number; highHandOptIn: boolean }[]
+  ) => Promise<void>;
 }) {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [highHandIds, setHighHandIds] = useState<Set<string>>(new Set());
   const [buyIn, setBuyIn] = useState<number | ''>(defaultBuyIn);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -33,6 +41,15 @@ export default function AddPlayersModal({
 
   function toggle(playerId: string) {
     setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(playerId)) next.delete(playerId);
+      else next.add(playerId);
+      return next;
+    });
+  }
+
+  function toggleHighHand(playerId: string) {
+    setHighHandIds((prev) => {
       const next = new Set(prev);
       if (next.has(playerId)) next.delete(playerId);
       else next.add(playerId);
@@ -57,6 +74,7 @@ export default function AddPlayersModal({
         playerId: p.playerId,
         playerName: `${p.firstName} ${p.lastName}`,
         buyIn: Number(buyIn),
+        highHandOptIn: highHandIds.has(p.playerId),
       }));
     setSubmitting(true);
     try {
@@ -92,20 +110,37 @@ export default function AddPlayersModal({
           ) : (
             <div style={{ maxHeight: '45vh', overflowY: 'auto', marginBottom: 16 }}>
               {players.map((p) => (
-                <label
+                <div
                   key={p.playerId}
-                  style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '6px 0', cursor: 'pointer' }}
+                  style={{ display: 'flex', alignItems: 'center', gap: 16, padding: '6px 0' }}
                 >
-                  <input
-                    type="checkbox"
-                    checked={selectedIds.has(p.playerId)}
-                    onChange={() => toggle(p.playerId)}
-                    style={{ width: 'auto', marginBottom: 0 }}
-                  />
-                  <span style={{ fontFamily: 'var(--font-body)' }}>
-                    {p.firstName} {p.lastName}
-                  </span>
-                </label>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer' }}>
+                    <input
+                      type="checkbox"
+                      checked={selectedIds.has(p.playerId)}
+                      onChange={() => toggle(p.playerId)}
+                      style={{ width: 'auto', marginBottom: 0 }}
+                    />
+                    <span style={{ fontFamily: 'var(--font-body)' }}>
+                      {p.firstName} {p.lastName}
+                    </span>
+                  </label>
+                  {!!highHandBuyIn && (
+                    <label
+                      className="rail-meta"
+                      style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={highHandIds.has(p.playerId)}
+                        onChange={() => toggleHighHand(p.playerId)}
+                        disabled={!selectedIds.has(p.playerId)}
+                        style={{ width: 'auto', marginBottom: 0 }}
+                      />
+                      High hand pot (${highHandBuyIn})
+                    </label>
+                  )}
+                </div>
               ))}
             </div>
           )}

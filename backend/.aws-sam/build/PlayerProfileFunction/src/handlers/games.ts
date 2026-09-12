@@ -100,6 +100,7 @@ interface RosterPlayerInput {
   playerId: string;
   playerName: string;
   buyIn: number;
+  highHandOptIn?: boolean;
 }
 
 function isValidRosterPlayer(p: unknown): p is RosterPlayerInput {
@@ -112,7 +113,8 @@ function isValidRosterPlayer(p: unknown): p is RosterPlayerInput {
     cand.playerName.length > 0 &&
     typeof cand.buyIn === 'number' &&
     Number.isFinite(cand.buyIn) &&
-    cand.buyIn >= 0
+    cand.buyIn >= 0 &&
+    (cand.highHandOptIn === undefined || typeof cand.highHandOptIn === 'boolean')
   );
 }
 
@@ -184,6 +186,7 @@ async function createGame(
     notes: body.notes,
     createdBy,
     createdAt: new Date().toISOString(),
+    highHandBuyIn: body.highHandBuyIn,
   };
 
   await ddb.send(
@@ -232,6 +235,7 @@ async function createGame(
           addOns: 0,
           winnings: 0,
           points: 0, // not yet scored; position is unset
+          highHandOptIn: p.highHandOptIn ?? false,
         };
         return ddb.send(
           new PutCommand({
@@ -297,6 +301,7 @@ async function addPlayerToGame(
     addOns: 0,
     winnings: 0,
     points: 0, // not yet scored; position is unset
+    highHandOptIn: body.highHandOptIn ?? false,
   };
 
   await ddb.send(
@@ -438,6 +443,11 @@ async function updateGame(
     // Explicit undefined check (not ??) so callers can un-archive by passing
     // `archived: false`, which ?? would treat as "not provided".
     archived: body.archived !== undefined ? body.archived : existing.Item.archived,
+    highHandBuyIn: body.highHandBuyIn ?? existing.Item.highHandBuyIn,
+    // Blind timer state is persisted here too (the hand timer's Start/Pause/
+    // Skip/Reset actions all PUT their new state through this same endpoint)
+    // so it survives a page refresh -- see BlindTimerState in ../types.ts.
+    blindTimer: body.blindTimer ?? existing.Item.blindTimer,
   };
 
   await ddb.send(new PutCommand({ TableName: TABLE_NAME, Item: updated }));

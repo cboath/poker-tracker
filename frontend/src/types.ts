@@ -18,6 +18,19 @@ export interface Game {
   buyInAmount?: number;
   notes?: string;
   archived?: boolean; // hidden from the default history/standings views but not deleted
+  highHandBuyIn?: number; // per-player buy-in for the high hand side pot, set at creation
+  blindTimer?: BlindTimerState;
+}
+
+// Mirrors backend/src/types.ts -- live blind-clock state for the game page's
+// hand timer, persisted on `Game` via the existing PUT /games/{gameId}
+// merge so it survives a page refresh.
+export interface BlindTimerState {
+  levelIndex: number; // 0-based index into utils/blinds.ts's BLIND_LEVELS
+  levelDurationSeconds: number; // adjustable; defaults to 1200 (20 min)
+  running: boolean;
+  levelEndsAt?: string; // ISO timestamp; set only while running
+  remainingSeconds: number; // snapshot used while paused/stopped
 }
 
 // Mirrors backend/src/types.ts -- a `Result` can now exist either as:
@@ -40,6 +53,7 @@ export interface Result {
   winnings: number;
   points: number; // 0 if not yet scored
   notes?: string;
+  highHandOptIn?: boolean; // whether this player bought into the game's high hand side pot
 }
 
 export type Suit = 'hearts' | 'diamonds' | 'clubs' | 'spades';

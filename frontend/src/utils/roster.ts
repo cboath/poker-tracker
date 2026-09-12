@@ -17,12 +17,14 @@ export interface RosterEntry {
   playerId: string;
   playerName: string;
   buyIn: number;
+  highHandOptIn: boolean;
 }
 
 export interface RosterAdditionInput {
   playerId: string;
   playerName: string;
   buyIn: number | '';
+  highHandOptIn?: boolean;
 }
 
 export type RosterAdditionResult =
@@ -62,6 +64,7 @@ export function addPlayerToRoster(
         playerId: input.playerId,
         playerName: input.playerName,
         buyIn: Number(input.buyIn),
+        highHandOptIn: input.highHandOptIn ?? false,
       },
     ],
   };

@@ -71,6 +71,10 @@ async function upsertResult(
     winnings: body.winnings ?? 0,
     points,
     notes: body.notes,
+    // Falls back to whatever was already stored (like rebuyCount above)
+    // rather than defaulting to false, so callers that don't touch this
+    // field (savePosition, handleKnockOut, saveAdvanced) never clobber it.
+    highHandOptIn: body.highHandOptIn ?? existing?.highHandOptIn ?? false,
   };
 
   await ddb.send(

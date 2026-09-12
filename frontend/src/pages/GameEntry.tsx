@@ -27,6 +27,7 @@ export default function GameEntry() {
   const [date, setDate] = useState('');
   const [location, setLocation] = useState('');
   const [buyInAmount, setBuyInAmount] = useState<number | ''>('');
+  const [highHandBuyIn, setHighHandBuyIn] = useState<number | ''>('');
 
   // Roster builder for the new game: players are added one at a time (with
   // their individual buy-in) into `roster`, which becomes the source of
@@ -35,6 +36,7 @@ export default function GameEntry() {
   const [roster, setRoster] = useState<RosterEntry[]>([]);
   const [rosterPlayerId, setRosterPlayerId] = useState('');
   const [rosterBuyIn, setRosterBuyIn] = useState<number | ''>('');
+  const [rosterHighHandOptIn, setRosterHighHandOptIn] = useState(false);
   const rosterTotal = computeRosterTotal(roster);
 
   // Once a game-level buy-in amount is set, default each new roster entry's
@@ -60,6 +62,7 @@ export default function GameEntry() {
       playerId: rosterPlayerId,
       playerName: player ? `${player.firstName} ${player.lastName}` : '',
       buyIn: rosterBuyIn,
+      highHandOptIn: rosterHighHandOptIn,
     });
     if (!result.ok) {
       setError(result.error);
@@ -69,6 +72,7 @@ export default function GameEntry() {
     setRoster(result.roster);
     setRosterPlayerId('');
     setRosterBuyIn(buyInAmount);
+    setRosterHighHandOptIn(false);
   }
 
   function removeFromRoster(playerId: string) {
@@ -97,6 +101,7 @@ export default function GameEntry() {
         month,
         location: location || undefined,
         buyInAmount: buyInAmount === '' ? undefined : Number(buyInAmount),
+        highHandBuyIn: highHandBuyIn === '' ? undefined : Number(highHandBuyIn),
         players: roster,
       });
       setNotice(`Game created for ${date}. Redirecting to manage it...`);
@@ -104,9 +109,11 @@ export default function GameEntry() {
       setDate('');
       setLocation('');
       setBuyInAmount('');
+      setHighHandBuyIn('');
       setRoster([]);
       setRosterPlayerId('');
       setRosterBuyIn('');
+      setRosterHighHandOptIn(false);
       navigate(`/admin/games/${g.gameId}`);
     } catch (err: any) {
       setError(err.message);
@@ -139,6 +146,14 @@ export default function GameEntry() {
             value={buyInAmount}
             onChange={(e) => setBuyInAmount(e.target.value === '' ? '' : Number(e.target.value))}
           />
+          <label htmlFor="highHandBuyIn">High hand pot buy-in (optional)</label>
+          <input
+            id="highHandBuyIn"
+            type="number"
+            min={0}
+            value={highHandBuyIn}
+            onChange={(e) => setHighHandBuyIn(e.target.value === '' ? '' : Number(e.target.value))}
+          />
 
           <h4>Roster</h4>
           <label htmlFor="rosterPlayer">Player</label>
@@ -160,6 +175,17 @@ export default function GameEntry() {
             value={rosterBuyIn}
             onChange={(e) => setRosterBuyIn(e.target.value === '' ? '' : Number(e.target.value))}
           />
+          {!!highHandBuyIn && (
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <input
+                type="checkbox"
+                checked={rosterHighHandOptIn}
+                onChange={(e) => setRosterHighHandOptIn(e.target.checked)}
+                style={{ width: 'auto', marginBottom: 0 }}
+              />
+              High hand pot (${highHandBuyIn})
+            </label>
+          )}
           <button className="btn" type="button" onClick={addPlayerToRoster}>
             Add player
           </button>
@@ -168,9 +194,10 @@ export default function GameEntry() {
             <div className="empty-state">No players added yet.</div>
           ) : (
             roster.map((r) => (
-              <div key={r.playerId} className="rail-row" style={{ gridTemplateColumns: '1fr auto auto' }}>
+              <div key={r.playerId} className="rail-row" style={{ gridTemplateColumns: '1fr auto auto auto' }}>
                 <div className="rail-name">{r.playerName}</div>
                 <div>${r.buyIn}</div>
+                <div className="rail-meta">{r.highHandOptIn ? 'High hand' : ''}</div>
                 <button className="btn" type="button" onClick={() => removeFromRoster(r.playerId)} aria-label={`Remove ${r.playerName} from roster`}>
                   Remove
                 </button>

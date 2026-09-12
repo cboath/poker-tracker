@@ -68,7 +68,8 @@ export const api = {
       totalPot?: number;
       buyInAmount?: number;
       notes?: string;
-      players?: { playerId: string; playerName: string; buyIn: number }[];
+      highHandBuyIn?: number;
+      players?: { playerId: string; playerName: string; buyIn: number; highHandOptIn?: boolean }[];
     }
   ) =>
     request<Game>(`/years/${year}/games`, {
@@ -106,7 +107,10 @@ export const api = {
   // way of growing the roster after the game exists, as opposed to
   // createGame's one-time roster at creation. 409s if the player already has
   // a Result on this game.
-  addPlayerToGame: (gameId: string, data: { playerId: string; playerName: string; buyIn: number }) =>
+  addPlayerToGame: (
+    gameId: string,
+    data: { playerId: string; playerName: string; buyIn: number; highHandOptIn?: boolean }
+  ) =>
     request<Result>(`/games/${gameId}/players`, {
       method: 'POST',
       body: JSON.stringify(data),

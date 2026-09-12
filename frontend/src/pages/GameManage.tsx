@@ -1,11 +1,13 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { api } from '../api/client';
-import { GameWithResults, HighHand, Player, Result } from '../types';
+import { BlindTimerState, GameWithResults, HighHand, Player, Result } from '../types';
 import { calculatePayouts, calculatePayoutStructure, PayoutRow, PayoutStructureRow } from '../utils/payouts';
+import { calculateHighHandPot } from '../utils/highHandPot';
 import HighHandCards from '../components/HighHandCards';
 import AddPlayersModal from '../components/AddPlayersModal';
 import HighHandModal from '../components/HighHandModal';
+import BlindTimer, { defaultBlindTimerState } from '../components/BlindTimer';
 
 // Formats a finish place as "1st", "2nd", "3rd", "4th", etc. -- used to
 // label the "Knocked Out" button with the place it's about to record.
@@ -43,6 +45,16 @@ export default function GameManage() {
   // builder which only runs at creation.
   const [players, setPlayers] = useState<Player[]>([]);
   const [showAddPlayers, setShowAddPlayers] = useState(false);
+
+  // Selection for a tied-knockout: still-playing players checked off to be
+  // knocked out together, sharing one finish position (see handleTieKnockOut).
+  const [tieSelection, setTieSelection] = useState<Set<string>>(new Set());
+  const [tieKnockingOut, setTieKnockingOut] = useState(false);
+
+  // Admin override for how many places get paid (blank = auto, the default
+  // "pay up to 3, capped by how many are scored" behavior in payouts.ts).
+  const [placesPaid, setPlacesPaid] = useState<number | ''>('');
+  const placesPaidNumber = placesPaid === '' ? undefined : Number(placesPaid);
 
   // Payout calculation (client-side only, computed from activeGame.results)
   const [payoutResult, setPayoutResult] = useState<{
@@ -93,17 +105,22 @@ export default function GameManage() {
   // Re-fetch the game after any per-row edit (position save, rebuy, full
   // result save, or removal) so the table and payout calculators always
   // reflect what's actually saved server-side. Any previously calculated
-  // payouts are cleared since they no longer necessarily match the results.
+  // payouts are recomputed from the fresh results (using the same "places
+  // paid" override, if any) rather than just cleared, so an admin viewing
+  // the payout preview doesn't lose it every time they touch an unrelated
+  // row -- if it wasn't being shown, this is a no-op.
   async function refreshGame() {
     if (!activeGame) return;
     const refreshed = await api.getGame(activeGame.gameId);
     setActiveGame(refreshed);
-    setPayoutResult(null);
-    setPayoutStructureResult(null);
+    setPayoutResult((prev) => (prev ? calculatePayouts(refreshed.results, placesPaidNumber) : null));
+    setPayoutStructureResult((prev) =>
+      prev ? calculatePayoutStructure(refreshed.results, placesPaidNumber) : null
+    );
   }
 
   async function handleAddPlayers(
-    selected: { playerId: string; playerName: string; buyIn: number }[]
+    selected: { playerId: string; playerName: string; buyIn: number; highHandOptIn: boolean }[]
   ) {
     if (!activeGame) return;
     setError(null);
@@ -114,14 +131,76 @@ export default function GameManage() {
     setShowAddPlayers(false);
   }
 
+  // Persists a blind-timer state change (Start/Pause/Skip/Reset/duration
+  // edit, all from BlindTimer) via the same PUT /games/{gameId} endpoint
+  // used elsewhere on this page -- updated optimistically in local state so
+  // the countdown doesn't stutter waiting on the round trip.
+  async function handleBlindTimerChange(next: BlindTimerState) {
+    if (!activeGame) return;
+    setActiveGame({ ...activeGame, blindTimer: next });
+    try {
+      await api.updateGame(activeGame.gameId, { blindTimer: next });
+    } catch (err: any) {
+      setError(err.message);
+    }
+  }
+
+  // Knocks out every currently-selected still-playing player together,
+  // tied for the same finish position. Generalizes the single "Knocked Out"
+  // button's math: if N players are eliminated together while R players
+  // (the group included) still lack a position, they all finish at
+  // R - N + 1 -- for N=1 that's exactly `remainingCount`, so a normal single
+  // knockout is just this formula's N=1 case.
+  async function handleTieKnockOut() {
+    if (!activeGame) return;
+    const selected = activeGame.results.filter(
+      (r) => r.position === undefined && tieSelection.has(r.playerId)
+    );
+    if (selected.length < 2) return;
+    setError(null);
+    setTieKnockingOut(true);
+    try {
+      const remainingCount = activeGame.results.filter((r) => r.position === undefined).length;
+      const position = remainingCount - selected.length + 1;
+      await Promise.all(
+        selected.map((r) =>
+          api.upsertResult(activeGame.gameId, r.playerId, {
+            playerName: r.playerName,
+            position,
+            buyIn: r.buyIn,
+            rebuys: r.rebuys,
+            addOns: r.addOns,
+            winnings: r.winnings,
+            notes: r.notes,
+          })
+        )
+      );
+      setTieSelection(new Set());
+      await refreshGame();
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setTieKnockingOut(false);
+    }
+  }
+
+  function toggleTieSelection(playerId: string) {
+    setTieSelection((prev) => {
+      const next = new Set(prev);
+      if (next.has(playerId)) next.delete(playerId);
+      else next.add(playerId);
+      return next;
+    });
+  }
+
   function showPayouts() {
     if (!activeGame) return;
-    setPayoutResult(calculatePayouts(activeGame.results));
+    setPayoutResult(calculatePayouts(activeGame.results, placesPaidNumber));
   }
 
   function showPayoutStructure() {
     if (!activeGame) return;
-    setPayoutStructureResult(calculatePayoutStructure(activeGame.results));
+    setPayoutStructureResult(calculatePayoutStructure(activeGame.results, placesPaidNumber));
   }
 
   // "Finish Game": computes the payout for each paid finisher (same
@@ -134,7 +213,7 @@ export default function GameManage() {
     if (!activeGame) return;
     setError(null);
     setFinishNotice(null);
-    const { payouts } = calculatePayouts(activeGame.results);
+    const { payouts } = calculatePayouts(activeGame.results, placesPaidNumber);
     if (payouts.length === 0) {
       setError('No finish positions recorded yet -- nothing to pay out.');
       return;
@@ -170,6 +249,46 @@ export default function GameManage() {
       setError(err.message);
     } finally {
       setFinishing(false);
+    }
+  }
+
+  // Lets an admin override one player's calculated payout directly in the
+  // payout preview table (e.g. the tier split isn't quite how the table
+  // wants to divide it up) -- writes straight to that player's `winnings`
+  // via the same upsertResult PUT used everywhere else, then updates both
+  // the payout preview and the results table's local copy without a full
+  // page reload.
+  async function savePayoutOverride(playerId: string, amount: number) {
+    if (!activeGame) return;
+    const result = activeGame.results.find((r) => r.playerId === playerId);
+    if (!result) return;
+    setError(null);
+    try {
+      const saved = await api.upsertResult(activeGame.gameId, playerId, {
+        playerName: result.playerName,
+        position: result.position,
+        buyIn: result.buyIn,
+        rebuys: result.rebuys,
+        addOns: result.addOns,
+        winnings: amount,
+        notes: result.notes,
+      });
+      setActiveGame({
+        ...activeGame,
+        results: activeGame.results.map((r) => (r.playerId === playerId ? saved : r)),
+      });
+      setPayoutResult((prev) =>
+        prev
+          ? {
+              ...prev,
+              payouts: prev.payouts.map((p) =>
+                p.playerId === playerId ? { ...p, payout: saved.winnings } : p
+              ),
+            }
+          : prev
+      );
+    } catch (err: any) {
+      setError(err.message);
     }
   }
 
@@ -232,20 +351,38 @@ export default function GameManage() {
       {error && <p style={{ color: 'var(--rail-red)' }}>{error}</p>}
 
       <div className="panel" style={{ marginTop: 20, marginBottom: 24 }}>
+        <h3>Blind Timer</h3>
+        <BlindTimer
+          state={activeGame.blindTimer ?? defaultBlindTimerState()}
+          onChange={handleBlindTimerChange}
+        />
+      </div>
+
+      <div className="panel" style={{ marginBottom: 24 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
           <h3>Results</h3>
           <button className="btn" onClick={() => setShowAddPlayers(true)}>
             Add Player(s)
           </button>
         </div>
+        {tieSelection.size >= 2 && (
+          <p style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            {tieSelection.size} players selected for a tied knockout.{' '}
+            <button className="btn primary" onClick={handleTieKnockOut} disabled={tieKnockingOut}>
+              {tieKnockingOut ? 'Saving...' : 'Knock out selected (tied)'}
+            </button>
+          </p>
+        )}
         {activeGame.results.length === 0 ? (
           <div className="empty-state">No players in this game yet.</div>
         ) : (
           <table>
             <thead>
               <tr>
+                <th></th>
                 <th>Pos</th>
                 <th>Player</th>
+                <th title="Opted into the high hand pot">HH</th>
                 <th>Points</th>
                 <th>Buy-in</th>
                 <th>Rebuys</th>
@@ -270,6 +407,8 @@ export default function GameManage() {
                     // the place a "Knocked Out" click on r would assign, since
                     // everyone still standing outranks whoever leaves next.
                     remainingCount={activeGame.results.filter((x) => x.position === undefined).length}
+                    tieSelected={tieSelection.has(r.playerId)}
+                    onToggleTieSelected={() => toggleTieSelection(r.playerId)}
                     onSaved={refreshGame}
                     onError={setError}
                     onClearError={() => setError(null)}
@@ -284,6 +423,7 @@ export default function GameManage() {
         <h3>High Hand</h3>
         <HighHandPanel
           gameId={activeGame.gameId}
+          highHandBuyIn={activeGame.highHandBuyIn}
           results={activeGame.results}
           highHand={activeGame.highHand}
           onSaved={refreshGame}
@@ -294,6 +434,17 @@ export default function GameManage() {
 
       <div className="panel">
         <h3>Payouts</h3>
+        <label htmlFor="placesPaid" style={{ display: 'inline-flex', alignItems: 'center', gap: 8, marginRight: 16 }}>
+          Places paid (blank = auto)
+          <input
+            id="placesPaid"
+            type="number"
+            min={1}
+            value={placesPaid}
+            onChange={(e) => setPlacesPaid(e.target.value === '' ? '' : Number(e.target.value))}
+            style={{ width: 64, marginBottom: 0 }}
+          />
+        </label>
         <button className="btn" onClick={showPayouts} disabled={activeGame.results.length === 0}>
           Calculate Payouts
         </button>{' '}
@@ -363,12 +514,19 @@ export default function GameManage() {
                     <tr key={p.playerId}>
                       <td>{p.position}</td>
                       <td style={{ fontFamily: 'var(--font-body)' }}>{p.playerName}</td>
-                      <td>${p.payout.toFixed(2)}</td>
+                      <td>
+                        <PayoutAmountEditor
+                          payout={p.payout}
+                          playerName={p.playerName}
+                          onSave={(amount) => savePayoutOverride(p.playerId, amount)}
+                        />
+                      </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             )}
+            <p className="rail-meta">Override any payout above if it needs to differ from the calculated split.</p>
             {payoutResult.payouts.length > 0 && payoutResult.remainder !== 0 && (
               <p>
                 {payoutResult.remainder > 0
@@ -410,11 +568,55 @@ export default function GameManage() {
             (p) => p.active && !activeGame.results.some((r) => r.playerId === p.playerId)
           )}
           defaultBuyIn={activeGame.buyInAmount ?? ''}
+          highHandBuyIn={activeGame.highHandBuyIn}
           onClose={() => setShowAddPlayers(false)}
           onSubmit={handleAddPlayers}
         />
       )}
     </div>
+  );
+}
+
+// A single editable payout amount in the "Calculate Payouts" preview table --
+// lets an admin override the tier-calculated split for one player (e.g. the
+// group wants a different cut than the formula produced). Auto-saves on
+// blur, matching the position/winnings inputs in the results table below;
+// seeded once from the calculated `payout` on mount rather than resyncing on
+// every prop change, same reasoning as ResultRow's drafts (a payout preview
+// recomputed for an unrelated row shouldn't blow away this one's edit).
+function PayoutAmountEditor({
+  payout,
+  playerName,
+  onSave,
+}: {
+  payout: number;
+  playerName: string;
+  onSave: (amount: number) => void | Promise<void>;
+}) {
+  const [draft, setDraft] = useState(payout);
+  const [saving, setSaving] = useState(false);
+
+  async function save() {
+    if (draft === payout || saving) return;
+    setSaving(true);
+    try {
+      await onSave(draft);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <input
+      type="number"
+      min={0}
+      value={draft}
+      onChange={(e) => setDraft(Number(e.target.value))}
+      onBlur={save}
+      disabled={saving}
+      aria-label={`Payout for ${playerName}`}
+      style={{ width: 80, marginBottom: 0 }}
+    />
   );
 }
 
@@ -427,6 +629,8 @@ function ResultRow({
   gameId,
   result,
   remainingCount,
+  tieSelected,
+  onToggleTieSelected,
   onSaved,
   onError,
   onClearError,
@@ -434,6 +638,8 @@ function ResultRow({
   gameId: string;
   result: Result;
   remainingCount: number;
+  tieSelected: boolean;
+  onToggleTieSelected: () => void;
   onSaved: () => void | Promise<void>;
   onError: (message: string) => void;
   onClearError: () => void;
@@ -451,16 +657,18 @@ function ResultRow({
 
   const [buyInDraft, setBuyInDraft] = useState(result.buyIn);
   const [addOnsDraft, setAddOnsDraft] = useState(result.addOns);
-  const [winningsDraft, setWinningsDraft] = useState(result.winnings);
   const [notesDraft, setNotesDraft] = useState(result.notes ?? '');
   const [savingAdvanced, setSavingAdvanced] = useState(false);
   const [knockingOut, setKnockingOut] = useState(false);
 
+  const [winningsDraft, setWinningsDraft] = useState<number>(result.winnings);
+  const [savingWinnings, setSavingWinnings] = useState(false);
+
   const positionDirty = positionDraft !== (result.position ?? '');
+  const winningsDirty = winningsDraft !== result.winnings;
   const advancedDirty =
     buyInDraft !== result.buyIn ||
     addOnsDraft !== result.addOns ||
-    winningsDraft !== result.winnings ||
     notesDraft !== (result.notes ?? '');
 
   // upsertResult is a full PUT of the whole Result, not a patch -- every
@@ -529,18 +737,45 @@ function ResultRow({
         buyIn: buyInDraft,
         rebuys: result.rebuys,
         addOns: addOnsDraft,
-        winnings: winningsDraft,
+        winnings: result.winnings,
         notes: notesDraft || undefined,
       });
       setBuyInDraft(saved.buyIn);
       setAddOnsDraft(saved.addOns);
-      setWinningsDraft(saved.winnings);
       setNotesDraft(saved.notes ?? '');
       await onSaved();
     } catch (err: any) {
       onError(err.message);
     } finally {
       setSavingAdvanced(false);
+    }
+  }
+
+  // Winnings/payout gets its own always-visible inline editor (mirroring the
+  // Position cell) rather than living in the "Edit full result" disclosure,
+  // so adjusting a payout -- including after clicking "Finish Game" -- is a
+  // direct, discoverable action instead of something buried in a collapsed
+  // form. There's no "finished" lock anywhere in this app; this is purely
+  // about making an always-available edit easy to find.
+  async function saveWinnings() {
+    onClearError();
+    setSavingWinnings(true);
+    try {
+      const saved = await api.upsertResult(gameId, result.playerId, {
+        playerName: result.playerName,
+        position: result.position,
+        buyIn: result.buyIn,
+        rebuys: result.rebuys,
+        addOns: result.addOns,
+        winnings: winningsDraft,
+        notes: result.notes,
+      });
+      setWinningsDraft(saved.winnings);
+      await onSaved();
+    } catch (err: any) {
+      onError(err.message);
+    } finally {
+      setSavingWinnings(false);
     }
   }
 
@@ -568,31 +803,63 @@ function ResultRow({
     <>
       <tr>
         <td>
+          {result.position === undefined && (
+            <input
+              type="checkbox"
+              checked={tieSelected}
+              onChange={onToggleTieSelected}
+              aria-label={`Select ${result.playerName} for a tied knockout`}
+              style={{ width: 'auto', marginBottom: 0 }}
+            />
+          )}
+        </td>
+        <td>
           <form
             onSubmit={(e) => {
               e.preventDefault();
               savePosition();
             }}
-            style={{ display: 'flex', alignItems: 'center', gap: 6 }}
           >
             <input
               type="number"
               min={1}
               value={positionDraft}
               onChange={(e) => setPositionDraft(e.target.value === '' ? '' : Number(e.target.value))}
+              onBlur={() => positionDirty && !savingPosition && savePosition()}
               aria-label={`Finish position for ${result.playerName}`}
               style={{ width: 60, marginBottom: 0 }}
             />
-            <button className="btn" type="submit" disabled={!positionDirty || savingPosition}>
-              Save
-            </button>
           </form>
         </td>
         <td style={{ fontFamily: 'var(--font-body)' }}>{result.playerName}</td>
+        <td style={{ textAlign: 'center' }} aria-label={result.highHandOptIn ? `${result.playerName} opted into the high hand pot` : undefined}>
+          {result.highHandOptIn ? (
+            <span style={{ color: '#2196f3', fontSize: '1.3em', fontWeight: 'bold' }}>✓</span>
+          ) : (
+            ''
+          )}
+        </td>
         <td>{result.points}</td>
         <td>${result.buyIn}</td>
         <td>{result.rebuyCount > 0 ? `${result.rebuyCount} ($${result.rebuys})` : '—'}</td>
-        <td>${result.winnings}</td>
+        <td>
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              saveWinnings();
+            }}
+          >
+            <input
+              type="number"
+              min={0}
+              value={winningsDraft}
+              onChange={(e) => setWinningsDraft(Number(e.target.value))}
+              onBlur={() => winningsDirty && !savingWinnings && saveWinnings()}
+              aria-label={`Winnings for ${result.playerName}`}
+              style={{ width: 70, marginBottom: 0 }}
+            />
+          </form>
+        </td>
         <td>
           {result.position === undefined && (
             <>
@@ -601,23 +868,23 @@ function ResultRow({
                   ? 'Saving...'
                   : remainingCount === 1
                     ? 'Winner!'
-                    : `Knocked Out (${ordinal(remainingCount)})`}
+                    : `K.O. (${ordinal(remainingCount)})`}
               </button>{' '}
+              <button className="btn" onClick={handleAddRebuy}>
+                Add Rebuy
+              </button>{' '}
+              <button className="btn" onClick={handleRemove} aria-label={`Remove ${result.playerName}'s result`}>
+                Remove
+              </button>
             </>
           )}
-          <button className="btn" onClick={handleAddRebuy}>
-            Add Rebuy
-          </button>{' '}
-          <button className="btn" onClick={handleRemove} aria-label={`Remove ${result.playerName}'s result`}>
-            Remove
-          </button>
         </td>
       </tr>
       <tr>
-        <td colSpan={7} style={{ paddingTop: 0 }}>
+        <td colSpan={9} style={{ paddingTop: 0 }}>
           <details>
             <summary style={{ cursor: 'pointer', color: 'var(--cream-dim)', fontSize: '0.82rem' }}>
-              Edit full result (buy-in, add-ons, winnings, notes)
+              Edit full result (buy-in, add-ons, notes)
             </summary>
             <form
               onSubmit={(e) => {
@@ -641,14 +908,6 @@ function ResultRow({
                 min={0}
                 value={addOnsDraft}
                 onChange={(e) => setAddOnsDraft(Number(e.target.value))}
-              />
-              <label htmlFor={`winnings-${result.playerId}`}>Winnings</label>
-              <input
-                id={`winnings-${result.playerId}`}
-                type="number"
-                min={0}
-                value={winningsDraft}
-                onChange={(e) => setWinningsDraft(Number(e.target.value))}
               />
               <label htmlFor={`notes-${result.playerId}`}>Notes (bad beats, highlights, etc.)</label>
               <textarea
@@ -675,6 +934,7 @@ function ResultRow({
 // than living inside the modal.
 function HighHandPanel({
   gameId,
+  highHandBuyIn,
   results,
   highHand,
   onSaved,
@@ -682,6 +942,7 @@ function HighHandPanel({
   onClearError,
 }: {
   gameId: string;
+  highHandBuyIn?: number;
   results: Result[];
   highHand: HighHand | null | undefined;
   onSaved: () => void | Promise<void>;
@@ -690,6 +951,32 @@ function HighHandPanel({
 }) {
   const [removing, setRemoving] = useState(false);
   const [showModal, setShowModal] = useState(false);
+
+  // The high hand buy-in amount used to only be settable at game creation
+  // (GameEntry), which meant a game created without one -- or created
+  // before this feature existed -- had no way to ever get one, so the
+  // "high hand pot" checkbox on the Add Player(s) modal could never appear
+  // (it's gated on this being truthy). Editable here too now, via the same
+  // PUT /games/{gameId} merge the blind timer and archive toggle already use.
+  const [buyInDraft, setBuyInDraft] = useState<number | ''>(highHandBuyIn ?? '');
+  const [savingBuyIn, setSavingBuyIn] = useState(false);
+  const buyInDirty = buyInDraft !== (highHandBuyIn ?? '');
+
+  async function saveBuyIn() {
+    onClearError();
+    setSavingBuyIn(true);
+    try {
+      const saved = await api.updateGame(gameId, {
+        highHandBuyIn: buyInDraft === '' ? undefined : Number(buyInDraft),
+      });
+      setBuyInDraft(saved.highHandBuyIn ?? '');
+      await onSaved();
+    } catch (err: any) {
+      onError(err.message);
+    } finally {
+      setSavingBuyIn(false);
+    }
+  }
 
   async function handleRemove() {
     onClearError();
@@ -704,8 +991,38 @@ function HighHandPanel({
     }
   }
 
+  const { participantCount, total } = calculateHighHandPot({ highHandBuyIn }, results);
+
   return (
     <div>
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          saveBuyIn();
+        }}
+        style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}
+      >
+        <label htmlFor="highHandBuyIn" style={{ marginBottom: 0 }}>
+          High hand pot buy-in per player
+        </label>
+        <input
+          id="highHandBuyIn"
+          type="number"
+          min={0}
+          value={buyInDraft}
+          onChange={(e) => setBuyInDraft(e.target.value === '' ? '' : Number(e.target.value))}
+          style={{ width: 80, marginBottom: 0 }}
+        />
+        <button className="btn" type="submit" disabled={!buyInDirty || savingBuyIn}>
+          {savingBuyIn ? 'Saving...' : 'Save'}
+        </button>
+      </form>
+      {!!highHandBuyIn && (
+        <p className="rail-meta">
+          {participantCount} player{participantCount === 1 ? '' : 's'} opted in at ${highHandBuyIn}{' '}
+          each &mdash; ${total} pot
+        </p>
+      )}
       {highHand ? (
         <div style={{ marginBottom: 20 }}>
           <HighHandCards highHand={highHand} size="md" />
