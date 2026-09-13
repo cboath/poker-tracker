@@ -35,9 +35,16 @@ function remainingSecondsNow(state: BlindTimerState): number {
 export default function BlindTimer({
   state,
   onChange,
+  readOnly,
 }: {
   state: BlindTimerState;
-  onChange: (next: BlindTimerState) => void | Promise<void>;
+  // Optional in read-only mode (the public GameDetail view): a spectator's
+  // page shouldn't write timer state, so it just displays the countdown as
+  // fetched and relies on GameDetail's own polling to pick up whatever the
+  // organizer's session persists (start/pause/skip/level-advance) -- see the
+  // guard on the auto-advance effect below.
+  onChange?: (next: BlindTimerState) => void | Promise<void>;
+  readOnly?: boolean;
 }) {
   const [, forceTick] = useState(0);
   const advancingRef = useRef(false);
@@ -51,6 +58,7 @@ export default function BlindTimer({
   const remaining = remainingSecondsNow(state);
 
   useEffect(() => {
+    if (readOnly || !onChange) return;
     if (state.running && remaining <= 0 && !advancingRef.current) {
       advancingRef.current = true;
       const next: BlindTimerState = {
@@ -64,10 +72,10 @@ export default function BlindTimer({
       });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state.running, remaining <= 0]);
+  }, [state.running, remaining <= 0, readOnly]);
 
   function start() {
-    onChange({
+    onChange?.({
       ...state,
       running: true,
       levelEndsAt: new Date(Date.now() + remaining * 1000).toISOString(),
@@ -75,11 +83,11 @@ export default function BlindTimer({
   }
 
   function pause() {
-    onChange({ ...state, running: false, remainingSeconds: remaining, levelEndsAt: undefined });
+    onChange?.({ ...state, running: false, remainingSeconds: remaining, levelEndsAt: undefined });
   }
 
   function resetLevel() {
-    onChange({
+    onChange?.({
       ...state,
       remainingSeconds: state.levelDurationSeconds,
       levelEndsAt: state.running
@@ -89,7 +97,7 @@ export default function BlindTimer({
   }
 
   function skipLevel() {
-    onChange({
+    onChange?.({
       ...state,
       levelIndex: state.levelIndex + 1,
       remainingSeconds: state.levelDurationSeconds,
@@ -100,7 +108,7 @@ export default function BlindTimer({
   }
 
   function resetTournament() {
-    onChange({
+    onChange?.({
       ...state,
       levelIndex: 0,
       remainingSeconds: state.levelDurationSeconds,
@@ -112,7 +120,7 @@ export default function BlindTimer({
 
   function setDurationMinutes(minutes: number) {
     const levelDurationSeconds = Math.max(1, Math.round(minutes * 60));
-    onChange({
+    onChange?.({
       ...state,
       levelDurationSeconds,
       remainingSeconds: state.running ? state.remainingSeconds : levelDurationSeconds,
@@ -138,36 +146,38 @@ export default function BlindTimer({
         </div>
       </div>
 
-      <div style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-        {state.running ? (
-          <button className="btn" onClick={pause}>
-            Pause
+      {!readOnly && (
+        <div style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          {state.running ? (
+            <button className="btn" onClick={pause}>
+              Pause
+            </button>
+          ) : (
+            <button className="btn primary" onClick={start}>
+              Start
+            </button>
+          )}
+          <button className="btn" onClick={resetLevel}>
+            Reset level
           </button>
-        ) : (
-          <button className="btn primary" onClick={start}>
-            Start
+          <button className="btn" onClick={skipLevel}>
+            Next level
           </button>
-        )}
-        <button className="btn" onClick={resetLevel}>
-          Reset level
-        </button>
-        <button className="btn" onClick={skipLevel}>
-          Next level
-        </button>
-        <button className="btn" onClick={resetTournament}>
-          Reset to level 1
-        </button>
-        <label style={{ display: 'flex', alignItems: 'center', gap: 6, marginLeft: 8 }}>
-          Minutes per level
-          <input
-            type="number"
-            min={1}
-            value={Math.round((state.levelDurationSeconds / 60) * 100) / 100}
-            onChange={(e) => setDurationMinutes(Number(e.target.value))}
-            style={{ width: 64, marginBottom: 0 }}
-          />
-        </label>
-      </div>
+          <button className="btn" onClick={resetTournament}>
+            Reset to level 1
+          </button>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, marginLeft: 8 }}>
+            Minutes per level
+            <input
+              type="number"
+              min={1}
+              value={Math.round((state.levelDurationSeconds / 60) * 100) / 100}
+              onChange={(e) => setDurationMinutes(Number(e.target.value))}
+              style={{ width: 64, marginBottom: 0 }}
+            />
+          </label>
+        </div>
+      )}
     </div>
   );
 }

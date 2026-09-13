@@ -13,7 +13,7 @@ export default function NavBar() {
           Standings
         </NavLink>
         <NavLink to="/history" className={({ isActive }) => (isActive ? 'active' : '')}>
-          History
+          Games
         </NavLink>
         <NavLink to="/players" className={({ isActive }) => (isActive ? 'active' : '')}>
           Players
